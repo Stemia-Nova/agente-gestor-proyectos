@@ -15,6 +15,10 @@ Uso:
   3) Ejecuta: .\run_dev.ps1
 #>
 
+# Ir al directorio del script (importante para rutas relativas como ./public)
+Set-Location -Path $PSScriptRoot
+Write-Host "Directorio actual: $(Get-Location)"
+
 Write-Host "== run_dev: preparar entorno de desarrollo =="
 
 # 1) Crear venv si no existe

@@ -1,0 +1,42 @@
+/* Oculta watermark del footer */
+.watermark {
+    visibility: hidden !important;
+}
+
+/* Reposiciona botón "nuevo chat" si lo tienes */
+#new-chat-button {
+    position: fixed !important;
+    top: 10px !important;
+    right: 157px !important;
+    z-index: 10000 !important;
+}
+
+/* Evita esconder imágenes globalmente: limítalo al header */
+header .flex.flex img:not(#custom-logo) {
+    display: none !important;
+}
+
+/* Logo propio opcional en el header:
+   1) Añade en tu HTML/JS un <img id="custom-logo" src="/public/logo_light.png" />
+   2) O insértalo desde Python con cl.Image al iniciar chat */
+#custom-logo {
+    position: fixed !important;
+    top: 10px !important;
+    left: 10px !important;
+    z-index: 9999 !important;
+    width: 120px !important;
+    height: auto !important;
+    display: block !important;
+    max-width: 100% !important;
+}
+
+/* Responsivo */
+@media (max-width: 768px) {
+    #custom-logo {
+        width: 80px !important;
+        top: 5px !important;
+        left: 5px !important;
+    }
+}
+
+/* Si antes tenías un body::before con una imagen que no existe, elimínalo. */
