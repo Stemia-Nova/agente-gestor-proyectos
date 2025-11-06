@@ -156,9 +156,18 @@ def main():
             break
         hybrid_search(q, model, collection, chunks, bm25, bm25_tokens, top_k=TOP_K)
 
-    # 💾 Persistir al finalizar
-    client.persist()
-    print(f"💾 Base Chroma persistida en: {DB_DIR.resolve()}")
+    # 💾 Persistir al finalizar (si el cliente lo soporta)
+    try:
+        pers = getattr(client, "persist", None)
+        if callable(pers):
+            pers()
+            print(f"💾 Base Chroma persistida en: {DB_DIR.resolve()}")
+        else:
+            # Algunas versiones de chromadb no exponen persist() en la API pública;
+            # en esos casos la persistencia puede ser automática o gestionada internamente.
+            print("⚠️ El cliente ChromaDB no soporta 'persist()' — omitiendo persistencia explícita.")
+    except Exception as e:
+        print(f"⚠️ No se pudo persistir la base ChromaDB: {e}")
 
 
 if __name__ == "__main__":
