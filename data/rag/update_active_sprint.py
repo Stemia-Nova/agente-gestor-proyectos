@@ -2,195 +2,177 @@
 # -*- coding: utf-8 -*-
 
 """
-Actualiza únicamente el sprint ACTIVO desde ClickUp
-y genera/actualiza su índice vectorial persistente en ChromaDB.
+Actualiza automáticamente la colección del sprint activo en ChromaDB,
+sin reindexar todo el proyecto.
 
-Flujo:
-  1️⃣ Detecta el sprint activo (lista actual en ClickUp)
-  2️⃣ Descarga sus tareas (incluso completadas)
-  3️⃣ Limpia y naturaliza los datos
-  4️⃣ Genera chunks y actualiza la colección Chroma correspondiente
+Detecta:
+ - Nuevas tareas → se añaden
+ - Tareas editadas → se actualizan (hash cambiado)
+ - Tareas sin cambios → se mantienen
+
+Compatible con ChromaDB >= 0.5.5
 """
 
 import os
 import json
+import hashlib
 import requests
 from pathlib import Path
-from datetime import datetime
-from dotenv import load_dotenv
 from tqdm import tqdm
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings
-from rank_bm25 import BM25Okapi
-import re
+from chromadb.api.types import IncludeEnum  # ✅ Import oficial
+from typing import Dict, Any, Optional, List
 
-# =====================================================
-# CONFIGURACIÓN GENERAL
-# =====================================================
-ROOT = Path(__file__).resolve().parents[2]
-ENV_PATH = ROOT / ".env"
-load_dotenv(ENV_PATH)
 
-CLICKUP_API_TOKEN = os.getenv("CLICKUP_API_TOKEN")
-FOLDER_ID = os.getenv("CLICKUP_FOLDER_ID")  # debe estar definido en .env
+# =========================================================
+# CONFIG
+# =========================================================
 
-HEADERS = {"Authorization": CLICKUP_API_TOKEN}
-BASE_URL = "https://api.clickup.com/api/v2"
+BASE_DIR = Path(__file__).resolve().parents[3]
+load_dotenv(BASE_DIR / ".env")
 
-DATA_DIR = ROOT / "data"
-PROCESSED_DIR = DATA_DIR / "processed"
-CHROMA_DIR = DATA_DIR / "rag" / "chroma_db"
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-
+API_TOKEN = os.getenv("CLICKUP_API_TOKEN")
+FOLDER_ID = os.getenv("CLICKUP_FOLDER_ID")
+DB_DIR = BASE_DIR / "data" / "rag" / "chroma_db"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L12-v2"
 
-# =====================================================
-# AUXILIARES
-# =====================================================
-def get_active_sprint():
-    """Devuelve el nombre e ID del sprint actual."""
+HEADERS = {"Authorization": API_TOKEN}
+BASE_URL = "https://api.clickup.com/api/v2"
+client = chromadb.PersistentClient(path=str(DB_DIR))
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def compute_hash(text: str) -> str:
+    """Devuelve un hash MD5 para detectar cambios de contenido."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def fetch_active_sprint() -> tuple[str, str]:
+    """Obtiene el sprint activo (lista no archivada) del folder indicado."""
     url = f"{BASE_URL}/folder/{FOLDER_ID}/list"
     resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    lists = resp.json().get("lists", [])
+    if resp.status_code != 200:
+        raise RuntimeError(f"Error al obtener listas del folder {FOLDER_ID}: {resp.text}")
 
-    # buscamos la lista con 'active' o la última creada
-    active = None
-    for l in lists:
-        if not l.get("archived"):
-            active = l
-    if not active and lists:
-        active = lists[-1]
-
+    data = resp.json()
+    active = next((l for l in data.get("lists", []) if not l.get("archived")), None)
     if not active:
-        raise ValueError("❌ No se encontró ningún sprint activo.")
-    print(f"🏁 Sprint activo detectado: {active['name']} (ID: {active['id']})")
+        raise ValueError("❌ No se encontró ningún sprint activo en ClickUp.")
+    print(f"🏁 Sprint activo detectado: {active['name']} ({active['id']})")
     return active["name"], active["id"]
 
-def flatten_json(d, parent_key="", sep="."):
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_json(v, new_key, sep=sep).items())
-        elif isinstance(v, list):
-            items.append((new_key, json.dumps(v, ensure_ascii=False)))
-        else:
-            items.append((new_key, v))
-    return dict(items)
 
-def tokenize(text):
-    return re.findall(r"\w+", text.lower())
-
-# =====================================================
-# PIPELINE DE PROCESO
-# =====================================================
-def fetch_tasks(list_id):
-    """Descarga tareas del sprint actual (activas + completadas)."""
-    url = f"{BASE_URL}/list/{list_id}/task?include_closed=true"
+def fetch_tasks(list_id: str) -> list[dict[str, Any]]:
+    """Descarga todas las tareas del sprint activo."""
+    url = f"{BASE_URL}/list/{list_id}/task?archived=false"
     resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    data = resp.json().get("tasks", [])
-    print(f"📥 {len(data)} tareas descargadas del sprint.")
-    return data
+    if resp.status_code != 200:
+        raise RuntimeError(f"Error al obtener tareas: {resp.text}")
+    data = resp.json()
+    print(f"📦 {len(data.get('tasks', []))} tareas encontradas en el sprint activo.")
+    return data.get("tasks", [])
 
-def clean_tasks(tasks, sprint_name):
-    """Limpia y normaliza tareas básicas."""
-    cleaned = []
-    for t in tasks:
-        status = (t.get("status", {}).get("status") or "").lower()
-        desc = t.get("description") or ""
-        tags = ", ".join(tag.get("name", "") for tag in t.get("tags", []))
-        assignees = ", ".join(a.get("username", "") for a in t.get("assignees", []))
 
-        metadata = {
-            "status": status,
-            "project": t.get("project", {}).get("name", ""),
-            "list": t.get("list", {}).get("name", ""),
-            "sprint": sprint_name,
-            "priority": (t.get("priority", {}) or {}).get("priority", ""),
-            "assignees": assignees,
-            "tags": tags,
-            "is_blocked": "bloque" in tags.lower(),
-            "has_doubts": "duda" in tags.lower(),
-            "is_urgent": "urgente" in tags.lower() or "urgent" in tags.lower(),
-        }
+def flatten_task(task: dict[str, Any]) -> dict[str, str]:
+    """Simplifica el JSON de la tarea ClickUp."""
+    return {
+        "id": task.get("id", ""),
+        "name": task.get("name", "Sin título"),
+        "desc": task.get("description", ""),
+        "status": task.get("status", {}).get("status", ""),
+        "sprint": task.get("list", {}).get("name", ""),
+        "project": task.get("project", {}).get("name", ""),
+        "priority": (task.get("priority", {}) or {}).get("priority", ""),
+        "assignees": ", ".join(a.get("username", "") for a in task.get("assignees", [])),
+        "tags": ", ".join(t.get("name", "") for t in task.get("tags", [])),
+    }
 
-        cleaned.append({
-            "task_id": t.get("id"),
-            "name": t.get("name", "Sin título"),
-            "description": desc,
-            "metadata": metadata,
-        })
-    return cleaned
+# =========================================================
+# MAIN UPDATE LOGIC
+# =========================================================
 
-def naturalize_task(task):
-    """Convierte la tarea en texto narrativo."""
-    m = task["metadata"]
-    texto = (
-        f"La tarea '{task['name']}' pertenece al proyecto '{m.get('project')}' "
-        f"en el sprint '{m.get('sprint')}'. "
-        f"Actualmente está en estado '{m.get('status')}'. "
-        f"Tiene prioridad '{m.get('priority')}'. "
-        f"{'Está asignada a ' + m.get('assignees') + '. ' if m.get('assignees') else 'Sin responsables asignados. '}"
-        f"Tiene las etiquetas {m.get('tags') or 'ninguna'}. "
-        f"Descripción: {task['description'] or 'sin descripción disponible.'}"
-    )
-    return texto
-
-def chunk_tasks(natural_texts, chunk_size=512):
-    """Divide las tareas largas en fragmentos de texto más pequeños."""
-    chunks = []
-    for i, t in enumerate(natural_texts):
-        if len(t["text"]) <= chunk_size:
-            chunks.append(t)
-        else:
-            for idx in range(0, len(t["text"]), chunk_size):
-                part = t["text"][idx:idx+chunk_size]
-                new = dict(t)
-                new["text"] = part
-                new["chunk_id"] = f"{t['task_id']}_chunk_{idx//chunk_size}"
-                chunks.append(new)
-    return chunks
-
-# =====================================================
-# INDEXACIÓN EN CHROMA
-# =====================================================
-def update_chroma(chunks, sprint_name):
-    print(f"🧠 Actualizando base vectorial del sprint: {sprint_name}")
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    collection = client.get_or_create_collection(sprint_name)
+def update_active_sprint() -> None:
+    """Sincroniza la base vectorial con el sprint activo de ClickUp."""
+    sprint_name, sprint_id = fetch_active_sprint()
+    tasks = fetch_tasks(sprint_id)
     model = SentenceTransformer(MODEL_NAME)
 
-    existing_ids = set(collection.get(ids=None, limit=100000).get("ids", []))
-    new_chunks = [c for c in chunks if c["chunk_id"] not in existing_ids]
+    collection = client.get_or_create_collection(sprint_name)
 
-    for c in tqdm(new_chunks):
-        emb = model.encode(c["text"], convert_to_numpy=True).tolist()
-        meta = c.get("metadata", {})
-        collection.add(
-            ids=[c["chunk_id"]],
-            documents=[c["text"]],
-            metadatas=[meta],
-            embeddings=[emb],
+    # ✅ Tipado correcto con IncludeEnum (nuevo API)
+    existing = collection.get(ids=None, include=IncludeEnum.metadatas)  # type: ignore
+
+    existing_ids = existing.ids if hasattr(existing, "ids") else []
+    existing_metas = existing.metadatas if hasattr(existing, "metadatas") else []
+
+    existing_hashes: Dict[str, str] = {}
+    for i, meta in zip(existing_ids, existing_metas):
+        if meta and isinstance(meta, dict):
+            existing_hashes[i] = meta.get("hash", "")
+
+    print(f"📊 Colección '{sprint_name}' contiene {len(existing_hashes)} documentos existentes.")
+    to_add, to_update = [], []
+
+    # Analizar cambios
+    for t in tqdm(tasks, desc="🔍 Analizando tareas"):
+        doc = flatten_task(t)
+        text = (
+            f"La tarea '{doc['name']}' pertenece al proyecto '{doc['project']}' "
+            f"en el sprint '{doc['sprint']}'. Estado: {doc['status']}. "
+            f"Prioridad: {doc['priority']}. Asignado a: {doc['assignees']}. "
+            f"Etiquetas: {doc['tags']}. Descripción: {doc['desc']}"
         )
+        hash_ = compute_hash(text)
 
-    print(f"✅ {len(new_chunks)} nuevos chunks indexados en '{sprint_name}'.")
+        if doc["id"] not in existing_hashes:
+            to_add.append((doc, text, hash_))
+        elif existing_hashes[doc["id"]] != hash_:
+            to_update.append((doc, text, hash_))
 
-# =====================================================
-# PROGRAMA PRINCIPAL
-# =====================================================
-def main():
-    print("🚀 Actualizando sprint activo...")
-    sprint_name, list_id = get_active_sprint()
-    tasks = fetch_tasks(list_id)
-    cleaned = clean_tasks(tasks, sprint_name)
-    natural = [{"task_id": t["task_id"], "text": naturalize_task(t), "metadata": t["metadata"], "chunk_id": t["task_id"]} for t in cleaned]
-    chunks = chunk_tasks(natural)
-    update_chroma(chunks, sprint_name)
-    print("✅ Base vectorial actualizada correctamente.")
+    print(f"🆕 Nuevas tareas: {len(to_add)} | ♻️ Actualizadas: {len(to_update)}")
+
+    # Añadir nuevas tareas
+    for doc, text, hash_ in to_add:
+        emb = model.encode(text, convert_to_numpy=True).tolist()
+        metadata = {**doc, "hash": hash_}
+        collection.add(ids=[doc["id"]], documents=[text], embeddings=[emb], metadatas=[metadata])
+
+    # Reindexar las modificadas
+    for doc, text, hash_ in to_update:
+        print(f"♻️ Actualizando tarea modificada: {doc['name']}")
+        emb = model.encode(text, convert_to_numpy=True).tolist()
+        metadata = {**doc, "hash": hash_}
+        collection.delete(ids=[doc["id"]])
+        collection.add(ids=[doc["id"]], documents=[text], embeddings=[emb], metadatas=[metadata])
+
+    print("✅ Actualización completada con éxito.")
+    print(f"💾 Base vectorial actualizada para el sprint: {sprint_name}")
+
+
+# =========================================================
+# OPTIONAL MODULAR FUNCTION
+# =========================================================
+
+def sync_sprint() -> str:
+    """
+    Función reutilizable para integrarse en el agente o chatbot.
+    Devuelve el nombre del sprint actualizado.
+    """
+    try:
+        update_active_sprint()
+        return "✅ Sprint activo sincronizado correctamente."
+    except Exception as e:
+        return f"❌ Error durante la sincronización: {e}"
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
-    main()
+    update_active_sprint()
