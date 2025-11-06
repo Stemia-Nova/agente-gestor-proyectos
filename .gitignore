@@ -1,12 +1,47 @@
-# Local virtual environment (do not commit)
-.venv/
+# =======================================
+# Archivos y carpetas generados por RAG
+# =======================================
 
-# Python cache files (auto-generated)
+# Datos procesados
+data/processed/
+data/rag/chroma_db/
+data/rag/index/*.sqlite3
+data/rag/index/*.bin
+
+# Archivos de ingesta (exportaciones temporales)
+data/rag/ingest/*.csv
+data/rag/ingest/*.json
+data/rag/ingest/*.jsonl
+
+# Archivos temporales o de caché
+*.log
+*.tmp
+*.cache
+*.bak
 __pycache__/
 *.pyc
 
 # Chainlit uploads/temp files (auto-generated)
 .chainlit/.files/
 
+# HuggingFace cache local
+.cache/
+~/
+C:/Users/*/.cache/huggingface/
+
+# Entorno virtual
+.venv/
+env
+venv/
+
 # Local environment variables (secrets). Copy from .env.example
 .env
+
+# Archivos de VSCode / IDE
+.vscode/
+.idea/
+
+# Resultados intermedios del pipeline
+data/rag/transform/*.jsonl
+data/rag/chunks/*.jsonl
+data/rag/index/*.jsonl
