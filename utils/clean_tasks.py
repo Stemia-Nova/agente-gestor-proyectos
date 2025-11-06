@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Limpia y normaliza las tareas descargadas desde ClickUp (varios Sprints)
-para generar un archivo `task_clean.jsonl` listo para la etapa de naturalización.
+Limpieza y normalización de tareas ClickUp (multi-sprint).
+Genera un archivo `data/processed/task_clean.jsonl` listo para la etapa de naturalización.
+Mantiene los campos: sprint, proyecto, lista, prioridad, estado y etiquetas.
 """
 
 import json
@@ -14,17 +15,6 @@ from tqdm import tqdm
 RAW_DIR = Path("data/rag/ingest")
 PROCESSED_DIR = Path("data/processed")
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-
-# =============================================================
-# LOCALIZAR ÚLTIMO ARCHIVO DE INGESTA
-# =============================================================
-
-json_files = sorted(RAW_DIR.glob("clickup_tasks_all_*.json"))
-if not json_files:
-    raise FileNotFoundError("❌ No se encontró ningún archivo JSON crudo en data/rag/ingest/")
-latest_file = json_files[-1]
-
-print(f"📂 Leyendo tareas desde: {latest_file}")
 
 # =============================================================
 # FUNCIONES AUXILIARES
@@ -42,69 +32,71 @@ def normalize_status(status_obj):
     if not status_obj or not isinstance(status_obj, dict):
         return "unknown"
 
-    raw_status = (status_obj.get("status") or "").lower().strip()
-    status_type = (status_obj.get("type") or "").lower().strip()
+    raw = (status_obj.get("status") or "").lower()
+    typ = (status_obj.get("type") or "").lower()
 
-    # Mapeo principal
-    if raw_status in ["to do", "por hacer", "pendiente"]:
+    if "to do" in raw or "pendiente" in raw:
         return "to_do"
-    if raw_status in ["in progress", "en progreso", "working on it"]:
+    if "in progress" in raw or "progreso" in raw:
         return "in_progress"
-    if raw_status in ["in review", "pendiente de revisión", "review"]:
+    if "review" in raw:
         return "in_review"
-    if raw_status in ["done", "complete", "completada", "finalizada", "terminada"]:
+    if "done" in raw or "complete" in raw or "finalizada" in raw:
         return "done"
-    if "block" in raw_status:
+    if "block" in raw:
         return "blocked"
 
-    # Basado en tipo genérico
-    if status_type == "open":
+    if typ == "open":
         return "to_do"
-    if status_type == "custom":
+    if typ == "custom":
         return "in_progress"
-    if status_type == "done":
+    if typ == "done":
         return "done"
 
-    return raw_status or "unknown"
+    return raw or "unknown"
 
 # =============================================================
 # PROCESAMIENTO PRINCIPAL
 # =============================================================
 
-with open(latest_file, "r", encoding="utf-8") as f:
+json_files = sorted(RAW_DIR.glob("clickup_tasks_all_*.json"))
+if not json_files:
+    raise FileNotFoundError("❌ No se encontró ningún archivo JSON en data/rag/ingest/")
+latest = json_files[-1]
+
+print(f"📂 Leyendo tareas desde: {latest}")
+
+with open(latest, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 tasks = data.get("tasks", [])
 print(f"✅ {len(tasks)} tareas encontradas.")
 
-output_path = PROCESSED_DIR / "task_clean.jsonl"
-
-with open(output_path, "w", encoding="utf-8") as fout:
+output = PROCESSED_DIR / "task_clean.jsonl"
+with open(output, "w", encoding="utf-8") as fout:
     for t in tqdm(tasks, desc="🧹 Limpiando tareas"):
-        status = normalize_status(t.get("status", {})).lower()
+        status = normalize_status(t.get("status", {}))
         project = t.get("project", {}).get("name", "")
         list_name = t.get("list", {}).get("name", "")
-        sprint = list_name  # ClickUp usa listas como sprints
+        sprint = t.get("sprint_name", list_name)
         desc = t.get("description") or ""
         assignees = ", ".join(a.get("username", "") for a in t.get("assignees", [])) or ""
-        tags = ", ".join(tag.get("name", "").lower() for tag in t.get("tags", [])) or ""
+        tags = ", ".join(tag.get("name", "") for tag in t.get("tags", [])) or ""
 
         metadata = {
             "status": status,
             "project": project,
-            "project_id": t.get("project", {}).get("id", ""),
             "list": list_name,
             "sprint": sprint,
-            "sprint_id": t.get("list", {}).get("id", ""),
             "priority": t.get("priority", {}).get("priority") if t.get("priority") else "",
             "assignees": assignees,
             "tags": tags,
-            "is_blocked": "bloque" in tags,
-            "has_doubts": "duda" in tags,
-            "is_urgent": "urgent" in tags or "urgente" in tags,
+            "is_blocked": "bloque" in tags.lower(),
+            "has_doubts": "duda" in tags.lower(),
+            "is_urgent": "urgent" in tags.lower() or "urgente" in tags.lower(),
         }
 
-        clean_task = {
+        record = {
             "task_id": t.get("id"),
             "name": t.get("name", "Sin título"),
             "description": desc,
@@ -114,7 +106,6 @@ with open(output_path, "w", encoding="utf-8") as fout:
             "metadata": metadata,
         }
 
-        fout.write(json.dumps(clean_task, ensure_ascii=False) + "\n")
+        fout.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-print(f"💾 Archivo limpio generado: {output_path}")
-print("✅ Limpieza completada con éxito.")
+print(f"💾 Archivo limpio generado en: {output}")

@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Divide los textos naturalizados de tareas en fragmentos (chunks) listos para vectorización.
-Entrada: data/processed/task_natural.jsonl
-Salida:  data/processed/task_chunks.jsonl
+Divide las tareas naturalizadas en chunks y conserva los metadatos importantes.
+Genera `data/processed/task_chunks.jsonl` con textos listos para indexación.
 """
 
 import json
@@ -12,65 +11,65 @@ from pathlib import Path
 from tqdm import tqdm
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# =============================================================
-# CONFIGURACIÓN
-# =============================================================
-
 INPUT_FILE = Path("data/processed/task_natural.jsonl")
 OUTPUT_FILE = Path("data/processed/task_chunks.jsonl")
 
-# Ajusta el tamaño del chunk según la longitud media de tus descripciones.
-CHUNK_SIZE = 300      # caracteres (equivale aprox. a 200-250 tokens)
-CHUNK_OVERLAP = 50    # solape entre chunks
-
 # =============================================================
-# FUNCIÓN PRINCIPAL
+# CONFIGURACIÓN DE SEGMENTACIÓN
 # =============================================================
 
-def main():
-    print(f"📂 Leyendo tareas naturalizadas desde {INPUT_FILE}")
-    if not INPUT_FILE.exists():
-        raise FileNotFoundError(f"No se encontró {INPUT_FILE}. Ejecuta antes 01_naturalize_tasks.py.")
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
 
-    tasks = [json.loads(line) for line in open(INPUT_FILE, "r", encoding="utf-8")]
-    print(f"🧩 Procesando {len(tasks)} tareas para generar chunks...")
+# =============================================================
+# EJECUCIÓN
+# =============================================================
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-    )
+if not INPUT_FILE.exists():
+    raise FileNotFoundError("❌ No se encontró task_natural.jsonl. Ejecuta 01_naturalize_tasks.py antes.")
 
-    chunked_docs = []
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=CHUNK_SIZE,
+    chunk_overlap=CHUNK_OVERLAP,
+    length_function=len,
+    separators=["\n\n", "\n", ". ", " ", ""],
+)
 
-    for task in tqdm(tasks, desc="Dividiendo texto en chunks"):
-        text = task.get("text", "").strip()
-        if not text:
-            continue
+with open(INPUT_FILE, "r", encoding="utf-8") as fin, open(OUTPUT_FILE, "w", encoding="utf-8") as fout:
+    lines = fin.readlines()
+    total_chunks = 0
 
+    for line in tqdm(lines, desc="✂️ Generando chunks"):
+        task = json.loads(line)
+        text = task["text"]
         chunks = splitter.split_text(text)
+
         for i, chunk in enumerate(chunks):
-            chunked_docs.append({
+            chunk_id = f"{task['task_id']}_chunk{i}"
+            meta = task["metadata"]
+
+            # Mantener campos clave para el RAG
+            metadata = {
                 "task_id": task["task_id"],
-                "chunk_id": f"{task['task_id']}_{i}",
-                "text": chunk.strip(),
-                "metadata": task.get("metadata", {})
-            })
+                "sprint": meta.get("sprint", ""),
+                "project": meta.get("project", ""),
+                "list": meta.get("list", ""),
+                "status": meta.get("status", ""),
+                "priority": meta.get("priority", ""),
+                "assignees": meta.get("assignees", ""),
+                "tags": meta.get("tags", ""),
+                "is_blocked": meta.get("is_blocked", False),
+                "has_doubts": meta.get("has_doubts", False),
+                "is_urgent": meta.get("is_urgent", False),
+            }
 
-    # Guardar resultado
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        for doc in chunked_docs:
-            f.write(json.dumps(doc, ensure_ascii=False) + "\n")
+            fout.write(json.dumps({
+                "chunk_id": chunk_id,
+                "task_id": task["task_id"],
+                "text": chunk,
+                "metadata": metadata
+            }, ensure_ascii=False) + "\n")
 
-    print(f"✅ {len(chunked_docs)} chunks guardados en {OUTPUT_FILE}")
+            total_chunks += 1
 
-    # Mostrar ejemplo
-    if chunked_docs:
-        print("\n🧠 Ejemplo de chunk generado:\n")
-        print(json.dumps(chunked_docs[0], indent=2, ensure_ascii=False))
-
-# =============================================================
-# PUNTO DE ENTRADA
-# =============================================================
-if __name__ == "__main__":
-    main()
+print(f"💾 Archivo final con {total_chunks} chunks generado en: {OUTPUT_FILE}")
