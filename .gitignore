@@ -1,0 +1,12 @@
+# Local virtual environment (do not commit)
+.venv/
+
+# Python cache files (auto-generated)
+__pycache__/
+*.pyc
+
+# Chainlit uploads/temp files (auto-generated)
+.chainlit/.files/
+
+# Local environment variables (secrets). Copy from .env.example
+.env

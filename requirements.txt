@@ -1,0 +1,65 @@
+# ==========================================================
+# Meeting Assistant Agent - Full Requirements
+# Tested on Python 3.13 (compatible with 3.11+)
+# ==========================================================
+
+# -----------------------------
+# 🔹 Core del Agente
+# -----------------------------
+chainlit==2.8.4
+certifi==2025.10.5
+charset-normalizer==3.4.4
+idna==3.11
+python-dotenv==1.2.1
+requests==2.32.5
+urllib3==2.5.0
+
+# -----------------------------
+# 🔹 Desarrollo y calidad de código
+# -----------------------------
+black>=24.0.0
+pylint>=3.2.0
+
+# ==========================================================
+# 🔸 Módulo RAG híbrido (ClickUp → Limpieza → Indexación)
+# ==========================================================
+
+# -----------------------------
+# 🔹 Utilidades generales
+# -----------------------------
+pandas==2.2.3           # manipulación de datos
+numpy==1.26.4           # soporte numérico
+tqdm==4.66.5            # barras de progreso
+rich==13.9.2            # logs coloridos
+
+# -----------------------------
+# 🔹 Limpieza y segmentación de texto
+# -----------------------------
+nltk==3.9.1
+langchain-text-splitters>=0.3.6
+
+# -----------------------------
+# 🔹 Indexación y recuperación híbrida
+# -----------------------------
+faiss-cpu==1.8.0        # indexador vectorial local
+rank-bm25==0.2.2        # recuperación léxica (BM25)
+sentence-transformers==3.1.1  # embeddings densos
+scikit-learn==1.5.2     # normalización / utilidades
+chromadb==0.5.5         # alternativa a FAISS (vector DB local)
+opensearch-py==2.7.1    # integración con OpenSearch (opcional)
+
+# -----------------------------
+# 🔹 Modelos y re-ranking
+# -----------------------------
+transformers==4.45.2
+datasets==3.0.1
+
+# -----------------------------
+# 🔹 API / Servidor
+# -----------------------------
+fastapi
+uvicorn[standard]>=0.35.0
+
+# ==========================================================
+# End of requirements.txt
+# ==========================================================
