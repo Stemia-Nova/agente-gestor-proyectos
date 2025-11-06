@@ -20,7 +20,7 @@ naturalize:
 
 chunk:
 	@echo "✂️ Generando chunks de texto..."
-	python data/rag/chunks/02_chunk_tasks.py
+	python data/rag/chunk/02_chunk_tasks.py
 
 index:
 	@echo "🧠 Indexando en ChromaDB..."
@@ -35,3 +35,7 @@ clean:
 	@echo "🗑️ Limpiando archivos generados..."
 	rm -rf data/processed/*.jsonl data/rag/chroma_db
 	@echo "✅ Limpieza completada."
+
+update_active:
+	@echo "🔄 Actualizando sprint activo..."
+	python data/rag/update_active_sprint.py
