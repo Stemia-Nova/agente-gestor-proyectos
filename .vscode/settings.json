@@ -6,7 +6,7 @@
     "python.linting.pylintEnabled": true,
     "python.analysis.typeCheckingMode": "basic",
     "files.exclude": {
-        ".venv": true,
+        ".venv": false,
         ".chainlit/.files": true
     }
 }
