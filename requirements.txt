@@ -45,20 +45,22 @@ faiss-cpu==1.8.0        # indexador vectorial local
 rank-bm25==0.2.2        # recuperación léxica (BM25)
 sentence-transformers==3.1.1  # embeddings densos
 scikit-learn==1.5.2     # normalización / utilidades
-chromadb==0.5.5         # alternativa a FAISS (vector DB local)
+chromadb==0.5.5         # base de datos vectorial persistente
 opensearch-py==2.7.1    # integración con OpenSearch (opcional)
 
 # -----------------------------
-# 🔹 Modelos y re-ranking
+# 🔹 Modelos neuronales y re-ranking
 # -----------------------------
-transformers==4.45.2
-datasets==3.0.1
+transformers==4.45.2    # modelos Hugging Face
+torch==2.4.0            # motor de inferencia (GPU/CPU)
+datasets==3.0.1         # utilidades de tokenización / evaluación
 
-# -----------------------------
-# 🔹 API / Servidor
-# -----------------------------
+# ==========================================================
+# 🔸 API / Servidor
+# ==========================================================
 fastapi
 uvicorn[standard]>=0.35.0
+
 
 # ==========================================================
 # End of requirements.txt
