@@ -107,13 +107,20 @@ def update_active_sprint() -> None:
     # ✅ Tipado correcto con IncludeEnum (nuevo API)
     existing = collection.get(ids=None, include=IncludeEnum.metadatas)  # type: ignore
 
-    existing_ids = existing.ids if hasattr(existing, "ids") else []
-    existing_metas = existing.metadatas if hasattr(existing, "metadatas") else []
+    # 'existing' puede ser un TypedDict (mapping) o un objeto; usar acceso por clave para los TypedDict
+    if isinstance(existing, dict):
+        existing_ids = existing.get("ids", []) or []
+        existing_metas = existing.get("metadatas", []) or []
+    else:
+        # Fallback para versiones/implementaciones que expongan atributos
+        existing_ids = getattr(existing, "ids", []) or []
+        existing_metas = getattr(existing, "metadatas", []) or []
 
     existing_hashes: Dict[str, str] = {}
     for i, meta in zip(existing_ids, existing_metas):
         if meta and isinstance(meta, dict):
-            existing_hashes[i] = meta.get("hash", "")
+            # Ensure the stored hash is a string to satisfy Dict[str, str] typing
+            existing_hashes[i] = str(meta.get("hash", ""))
 
     print(f"📊 Colección '{sprint_name}' contiene {len(existing_hashes)} documentos existentes.")
     to_add, to_update = [], []
