@@ -76,9 +76,14 @@ async def _run_semantic_search(query: str, top_k: int = 5):
 from typing import Optional
 
 
-def _build_prompt(context: str, question: str) -> str:
-    """Construye y devuelve el prompt exacto que se envía al modelo."""
-    return prompts.RAG_CONTEXT_PROMPT.format(context=context, question=question)
+def _build_prompt(context: str, question: str, system: str | None = None) -> str:
+    """Construye y devuelve el prompt exacto que se envía al modelo.
+
+    Inserta las `SYSTEM_INSTRUCTIONS` si no se proporcionan explícitamente.
+    """
+    if system is None:
+        system = getattr(prompts, "SYSTEM_INSTRUCTIONS", "")
+    return prompts.RAG_CONTEXT_PROMPT.format(system=system, context=context, question=question)
 
 
 def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mini") -> str:
