@@ -2,179 +2,197 @@
 # -*- coding: utf-8 -*-
 
 """
-HybridSearch mejorado con:
-- Recuperación semántica y proximidad (Chroma)
-- Reranking (MiniLM o TinyBERT)
-- Normalización (0..1)
-- Deducción automática de "Sprint actual"
+HybridSearch: motor híbrido de recuperación semántica para tareas de ClickUp.
+Usa ChromaDB persistente por sprint y combina:
+ - Embeddings semánticos (SentenceTransformers)
+ - Proximidad léxica (BM25)
+ - Re-ranker cruzado (CrossEncoder)
 """
 
 from __future__ import annotations
-import os, re, json
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union, cast
 import numpy as np
-from typing import Any, Dict, List
-
+from tqdm import tqdm
 import chromadb
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-import torch.nn.functional as F
+from chromadb.api.models.Collection import Collection
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from rank_bm25 import BM25Okapi
 
-# ==============================
-# Configuración
-# ==============================
-CHROMA_DIR = "data/rag/chroma_db"
-SEM_COLLECTION = "clickup_tasks"
-PROX_COLLECTION = "clickup_tasks_proximity"
-
-EMB_MODEL = "sentence-transformers/all-MiniLM-L12-v2"
+# =============================================================
+# CONFIGURACIÓN
+# =============================================================
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L12-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+CHROMA_BASE = Path("data/rag/chroma_db")
+COLLECTION_NAME = "clickup_tasks"
 
-TOPK_SEM = 10
-TOPK_PROX = 10
-TOPK_FINAL = 5
-
-# ==============================
-# Helpers
-# ==============================
-def _safe_meta_get(meta: Dict[str, Any], *keys: str, default: str = "") -> str:
-    for k in keys:
-        if k in meta and meta[k] is not None:
-            return str(meta[k])
-    return default
-
-def _get_task_id(meta: Dict[str, Any], fallback: str) -> str:
-    return _safe_meta_get(meta, "task_id", "id", default=fallback)
-
-def _dedup_by_task_id(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set()
-    out = []
-    for h in hits:
-        tid = _get_task_id(h.get("metadata", {}) or {}, fallback=h.get("id", ""))
-        if tid and tid not in seen:
-            seen.add(tid)
-            out.append(h)
-    return out
-
-def _pretty_hit(i: int, h: Dict[str, Any]) -> str:
-    meta = h.get("metadata", {}) or {}
-    title = _safe_meta_get(meta, "title", "task_name", "name", "task_id", default="Tarea")
-    sprint = _safe_meta_get(meta, "sprint", "sprint_name", default="-")
-    status = _safe_meta_get(meta, "status", default="-")
-    prio = _safe_meta_get(meta, "priority", default="-")
-    text = (h.get("text") or h.get("document") or "").strip().replace("\n", " ")
-    snippet = text[:140] + ("…" if len(text) > 140 else "")
-    prob = h.get("score_prob")
-    prob_str = f"{prob:.3f}" if isinstance(prob, float) else "--"
-    return f" {i}. ({prob_str}) {title} ({sprint} • {status} • {prio}) — {snippet}"
-
-# ==============================
-# Reranker
-# ==============================
-class CrossEncoderReranker:
-    def __init__(self, model_name: str = RERANK_MODEL):
-        print(f"⚖️  Inicializando Reranker ({model_name})...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        self.model.eval()
-
-    @torch.no_grad()
-    def score(self, query: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not candidates:
-            return candidates
-        for c in candidates:
-            if "text" not in c:
-                c["text"] = c.get("document", "") or ""
-        pairs = [(query, c["text"]) for c in candidates]
-        batch = self.tokenizer.batch_encode_plus(
-            pairs, padding=True, truncation=True, return_tensors="pt"
-        )
-        logits = self.model(**{k: v for k, v in batch.items()}).logits
-        if logits.size(-1) == 1:
-            probs = torch.sigmoid(logits.squeeze(-1))
-        elif logits.size(-1) == 2:
-            probs = F.softmax(logits, dim=-1)[:, 1]
-        else:
-            probs = F.softmax(logits, dim=-1).max(dim=-1).values
-        probs_np = probs.detach().cpu().numpy()
-        # Normalización por consulta
-        pmin, pmax = float(probs_np.min()), float(probs_np.max())
-        probs_scaled = (probs_np - pmin) / (pmax - pmin) if pmax > pmin else np.zeros_like(probs_np)
-        for c, p in zip(candidates, probs_scaled):
-            c["score_prob"] = float(p)
-        return sorted(candidates, key=lambda x: x["score_prob"], reverse=True)
-
-# ==============================
-# HybridSearch
-# ==============================
+# =============================================================
+# CLASE PRINCIPAL
+# =============================================================
 class HybridSearch:
-    def __init__(self, chroma_path=CHROMA_DIR, collection_sem=SEM_COLLECTION,
-                 collection_prox=PROX_COLLECTION, emb_model_name=EMB_MODEL):
-        print(f"🚀 Inicializando HybridSearch (colección '{collection_sem}' en {chroma_path})")
-        print("🧠 Inicializando SemanticSearch...")
-        self.emb_model = SentenceTransformer(emb_model_name)
-        self.client = chromadb.PersistentClient(path=chroma_path, settings=Settings(allow_reset=False))
-        self.col_sem = self.client.get_collection(collection_sem)
+    def __init__(self, chroma_base: Path = CHROMA_BASE):
+        self.chroma_base = chroma_base
+        self.embedder = SentenceTransformer(EMBED_MODEL)
+        self.reranker = CrossEncoder(RERANK_MODEL)
+        self._client = chromadb.PersistentClient(path=str(self.chroma_base))
+        self.col: Optional[Collection] = None
+
+        active_sprint = self._get_active_sprint()
+        if active_sprint:
+            self.col = self._load_collection(active_sprint)
+            print(f"✅ Usando colección de sprint activo: {active_sprint}")
+        else:
+            print("⚠️ No hay sprint activo en el registro. Usa update_chroma_from_clickup.py para inicializarlo.")
+
+    # ---------------------------------------------------------
+    # Utilidades internas
+    # ---------------------------------------------------------
+    def _get_registry_path(self) -> Path:
+        return self.chroma_base / "index_registry.json"
+
+    def _get_active_sprint(self) -> Optional[str]:
+        reg_path = self._get_registry_path()
+        if not reg_path.exists():
+            return None
         try:
-            self.col_prox = self.client.get_collection(collection_prox)
+            with open(reg_path, "r", encoding="utf-8") as f:
+                registry = json.load(f)
+            for sprint, info in registry.items():
+                if info.get("status") == "active":
+                    return sprint
         except Exception:
-            self.col_prox = self.col_sem
-        self.reranker = CrossEncoderReranker()
+            return None
+        return None
 
-    def _query_collection(self, col, query, n_results):
-        try:
-            res = col.query(query_texts=[query], n_results=n_results, include=["documents", "metadatas"])
-        except TypeError:
-            res = col.query(query_texts=[query], n_results=n_results,
-                            include={"documents": True, "metadatas": True})
-        docs = res.get("documents", [[]])[0] if res else []
-        metas = res.get("metadatas", [[]])[0] if res else []
-        return [{"document": d, "text": d, "metadata": m or {}} for d, m in zip(docs, metas)]
+    def _load_collection(self, sprint_name: str) -> Collection:
+        db_path = self.chroma_base / sprint_name.lower().replace(" ", "_")
+        db_path.mkdir(parents=True, exist_ok=True)
+        client = chromadb.PersistentClient(path=str(db_path))
+        return client.get_or_create_collection(name=COLLECTION_NAME)
 
-    def query(self, user_query: str):
-        # Interpretar "Sprint actual" → sprint con número más alto
-        if "actual" in user_query.lower():
-            all_meta = self.col_sem.get(include=["metadatas"])
-            sprints = []
-            for meta in all_meta.get("metadatas", []):
-                s = meta.get("sprint", "")
-                match = re.search(r"(\d+)", s)
-                if match:
-                    sprints.append(int(match.group(1)))
-            if sprints:
-                current_sprint = f"Sprint {max(sprints)}"
-                user_query = user_query.replace("actual", current_sprint)
-                print(f"🔁 Interpretado 'Sprint actual' como '{current_sprint}'")
+    # ---------------------------------------------------------
+    # Funciones públicas
+    # ---------------------------------------------------------
+    def count_tasks(self, filters: Optional[Dict[str, Any]] = None) -> int:
+        if not self.col:
+            raise ValueError("❌ No hay sprint activo en el registro.")
 
-        sem_hits = self._query_collection(self.col_sem, user_query, TOPK_SEM)
-        prox_hits = self._query_collection(self.col_prox, user_query, TOPK_PROX)
-        merged = _dedup_by_task_id(sem_hits + prox_hits)
-        reranked = self.reranker.score(user_query, merged)
-        return reranked[:TOPK_FINAL]
+        # Chroma acepta include como Sequence[Literal["metadatas"]]
+        data = self.col.get(include=cast(Sequence[str], ["metadatas"]))
+        metas = cast(List[Dict[str, Any]], data.get("metadatas") or [])
 
-# ==============================
-# CLI interactiva
-# ==============================
-def main():
-    print("\n🔍 *** MODO INTERACTIVO HYBRID SEARCH ***\n")
-    hs = HybridSearch()
-    while True:
-        try:
+        if not metas:
+            return 0
+
+        if not filters:
+            return len(metas)
+
+        count = 0
+        for m in metas:
+            if all(str(m.get(k, "")).lower() == str(v).lower() for k, v in filters.items()):
+                count += 1
+        return count
+
+    def query(self, text: str, k: int = 5) -> List[Dict[str, Any]]:
+        if not self.col:
+            raise ValueError("❌ No hay sprint activo en el registro.")
+
+        raw = self.col.get(include=cast(Sequence[str], ["documents", "metadatas"]))
+        docs = cast(List[str], raw.get("documents") or [])
+        metas = cast(List[Dict[str, Any]], raw.get("metadatas") or [])
+
+        if not docs:
+            raise ValueError("❌ No hay documentos indexados en ChromaDB.")
+
+        # =========================
+        # 1️⃣ Embeddings semánticos
+        # =========================
+        query_vec = self.embedder.encode([text], convert_to_numpy=True)[0]
+        doc_vecs = self.embedder.encode(docs, convert_to_numpy=True)
+
+        scores_sem = np.dot(doc_vecs, query_vec) / (
+            np.linalg.norm(doc_vecs, axis=1) * np.linalg.norm(query_vec)
+        )
+        top_sem_idx = np.argsort(scores_sem)[::-1][:k]
+        sem_hits = [
+            {"text": docs[i], "metadata": metas[i], "score": float(scores_sem[i])}
+            for i in top_sem_idx
+        ]
+
+        # =========================
+        # 2️⃣ BM25 (proximidad léxica)
+        # =========================
+        tokenized_corpus = [d.split() for d in docs]
+        bm25 = BM25Okapi(tokenized_corpus)
+        scores_bm25 = bm25.get_scores(text.split())
+        top_bm_idx = np.argsort(scores_bm25)[::-1][:k]
+        prox_hits = [
+            {"text": docs[i], "metadata": metas[i], "score": float(scores_bm25[i])}
+            for i in top_bm_idx
+        ]
+
+        # =========================
+        # 3️⃣ Combinar y re-rankear
+        # =========================
+        combined = sem_hits + prox_hits
+        unique = {json.dumps(h["metadata"], sort_keys=True): h for h in combined}
+        merged_hits = list(unique.values())
+
+        pairs = [(text, h["text"]) for h in merged_hits]
+        rerank_scores = self.reranker.predict(pairs)
+        reranked = sorted(
+            [
+                {"text": h["text"], "metadata": h["metadata"], "score": float(s)}
+                for h, s in zip(merged_hits, rerank_scores)
+            ],
+            key=lambda x: x["score"],
+            reverse=True,
+        )
+
+        if reranked:
+            scores = np.array([r["score"] for r in reranked])
+            min_s, max_s = scores.min(), scores.max()
+            if max_s - min_s > 0:
+                for r in reranked:
+                    r["score"] = (r["score"] - min_s) / (max_s - min_s)
+
+        return reranked[:k]
+
+    # ---------------------------------------------------------
+    # CLI (modo debug)
+    # ---------------------------------------------------------
+    @staticmethod
+    def debug_query():
+        print("\n🔍 *** MODO INTERACTIVO HYBRID SEARCH ***")
+        print("Escribe tu consulta (o 'salir' para terminar)\n")
+
+        hs = HybridSearch()
+        while True:
             q = input("👉 Introduce tu consulta: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not q or q.lower() in {"salir", "exit", "quit"}:
-            break
-        print("\n" + "="*80 + f"\n🔎 Ejecutando búsqueda híbrida para: '{q}'\n")
-        hits = hs.query(q)
-        if not hits:
-            print("ℹ️ Sin resultados.\n")
-            continue
-        for i, h in enumerate(hits, 1):
-            print(_pretty_hit(i, h))
-        print("\n" + "="*80 + "\n")
+            if not q or q.lower() in ("salir", "exit", "quit"):
+                break
 
+            try:
+                hits = hs.query(q, k=5)
+            except Exception as e:
+                print(f"\n❌ Error durante la búsqueda: {e}\n")
+                continue
+
+            print("\n================================================================================")
+            for i, h in enumerate(hits, start=1):
+                meta = h.get("metadata", {})
+                print(
+                    f"{i}. ({h['score']:.3f}) {meta.get('task_id')} "
+                    f"({meta.get('sprint')} • {meta.get('status')} • {meta.get('priority')}) — "
+                    f"{h['text'][:100]}"
+                )
+            print("================================================================================")
+
+
+# =============================================================
+# PUNTO DE ENTRADA CLI
+# =============================================================
 if __name__ == "__main__":
-    main()
+    HybridSearch.debug_query()

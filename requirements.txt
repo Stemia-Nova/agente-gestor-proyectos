@@ -1,24 +1,27 @@
 # ==========================================================
-# Meeting Assistant Agent - Full Requirements
-# Tested on Python 3.13 (compatible with 3.11+)
+# Agente Gestor de Proyectos (RAG ClickUp + Chainlit)
+# Tested on Python 3.12–3.13
 # ==========================================================
 
 # -----------------------------
-# 🔹 Core del Agente
+# 🔹 Core del Agente (Chat + LLM)
 # -----------------------------
 chainlit==2.8.4
-certifi==2025.10.5
-charset-normalizer==3.4.4
-idna==3.11
 python-dotenv==1.2.1
-requests==2.32.5
-urllib3==2.5.0
+requests==2.32.3
+urllib3==2.2.2
+certifi==2025.10.5
+charset-normalizer==3.4.0
+idna==3.10
 
 # -----------------------------
 # 🔹 Desarrollo y calidad de código
 # -----------------------------
 black>=24.0.0
 pylint>=3.2.0
+mypy>=1.11.0
+types-requests
+types-setuptools
 
 # ==========================================================
 # 🔸 Módulo RAG híbrido (ClickUp → Limpieza → Indexación)
@@ -27,41 +30,57 @@ pylint>=3.2.0
 # -----------------------------
 # 🔹 Utilidades generales
 # -----------------------------
-pandas==2.2.3           # manipulación de datos
-numpy==1.26.4           # soporte numérico
-tqdm==4.66.5            # barras de progreso
-rich==13.9.2            # logs coloridos
+pandas==2.2.3
+numpy==1.26.4
+tqdm==4.66.5
+rich==13.9.2
+pyyaml>=6.0.2
 
 # -----------------------------
 # 🔹 Limpieza y segmentación de texto
 # -----------------------------
 nltk==3.9.1
-langchain-text-splitters>=0.3.6
+langchain-text-splitters==0.3.6
+regex>=2024.5.15
 
 # -----------------------------
 # 🔹 Indexación y recuperación híbrida
 # -----------------------------
-faiss-cpu==1.8.0        # indexador vectorial local
-rank-bm25==0.2.2        # recuperación léxica (BM25)
-sentence-transformers==3.1.1  # embeddings densos
-scikit-learn==1.5.2     # normalización / utilidades
-chromadb==0.5.5         # base de datos vectorial persistente
-opensearch-py==2.7.1    # integración con OpenSearch (opcional)
+chromadb==0.5.5
+faiss-cpu==1.8.0
+rank-bm25==0.2.2
+sentence-transformers==3.1.1
+scikit-learn==1.5.2
+opensearch-py==2.7.1
 
 # -----------------------------
 # 🔹 Modelos neuronales y re-ranking
 # -----------------------------
-transformers==4.45.2    # modelos Hugging Face
-torch==2.4.0            # motor de inferencia (GPU/CPU)
-datasets==3.0.1         # utilidades de tokenización / evaluación
-openai>=1.0.0
+transformers==4.45.2
+torch==2.4.0
+datasets==3.0.1
+accelerate>=0.33.0
+safetensors>=0.4.3
+
+# -----------------------------
+# 🔹 API OpenAI y clientes LLM
+# -----------------------------
+openai>=1.0.0,<2.0.0
 
 # ==========================================================
-# 🔸 API / Servidor
+# 🔸 API / Servidor (para despliegue opcional)
 # ==========================================================
-fastapi
+fastapi>=0.116.1,<0.117.0      # compatible con Chainlit 2.8.4
 uvicorn[standard]>=0.35.0
+aiofiles>=23.2.1
 
+# ==========================================================
+# 🔸 Otros (formato, JSONL, testing, dev)
+# ==========================================================
+orjson>=3.10.0
+markdown-it-py>=3.0.0
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
 
 # ==========================================================
 # End of requirements.txt
