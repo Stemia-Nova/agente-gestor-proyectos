@@ -2,165 +2,208 @@
 # -*- coding: utf-8 -*-
 
 """
-Versión Pro-ready del módulo de búsqueda híbrida.
+HybridSearch sin recalcular embeddings.
 
-Permite dos modos:
- - 'basic' → BM25 + MiniLM + CrossEncoder
- - 'pro'   → SPLADE + E5-base + CrossEncoder
+Usa la base vectorial persistente creada en:
+  data/rag/chroma_db  → colección: clickup_tasks
 
-Modo de uso:
-    from utils.hybrid_search import HybridSearch
+Componentes:
+ - SemanticSearch  → consulta vectorial con MiniLM (SentenceTransformers) sobre ChromaDB
+ - ProximitySearch → embeddings alternativos (MiniLM también, para compatibilidad)
+ - Reranker        → Cross-Encoder TinyBERT para reordenar resultados
 
-    hs = HybridSearch(mode="pro")
-    results = hs.semantic_search("tareas bloqueadas")
-    hs.rerank("tareas bloqueadas", results)
+Muestra:
+ - Top 10 semánticos
+ - Top 10 proximidad
+ - Top 5 rerankeados
 """
 
-from typing import List, Dict, Any
-from pathlib import Path
+from typing import Any, Dict, List, Mapping, Sequence, cast
 import numpy as np
-import json
-import re
+import numpy.typing as npt
 import torch
-from tqdm import tqdm
-
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer, CrossEncoder
-from sklearn.metrics.pairwise import cosine_similarity
-
-# SPLADE (solo si modo pro)
-from transformers import AutoTokenizer, AutoModel
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import chromadb
+from chromadb.api.types import QueryResult
 
 
-class HybridSearch:
+# ==============================
+# Helpers de tipado/seguridad
+# ==============================
+def _ensure_ndarray(x: Any) -> npt.NDArray[np.float32]:
+    """Convierte a np.ndarray float32 (para Chroma)."""
+    arr = np.asarray(x, dtype=np.float32)
+    return cast(npt.NDArray[np.float32], arr)
+
+def _get_first(results: QueryResult, key: str) -> List[Any]:
+    """Extrae primer bloque de 'documents' o 'metadatas' de resultados de Chroma."""
+    val = results.get(key)
+    if val is None or not isinstance(val, list) or len(val) == 0:
+        return []
+    first = val[0]
+    if first is None:
+        return []
+    if not isinstance(first, list):
+        return [first]
+    return first
+
+def _metas_as_dicts(metas: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Convierte Sequence[Mapping] a List[Dict] de forma segura para tipado estático."""
+    return [dict(m) for m in metas]
+
+
+# ==============================
+# 1) SEMANTIC SEARCH (MiniLM)
+# ==============================
+class SemanticSearch:
+    """Consulta la colección principal clickup_tasks en ChromaDB."""
     def __init__(
         self,
-        data_path: str = "data/processed/task_chunks.jsonl",
-        mode: str = "basic",  # 'basic' o 'pro'
-        embedding_model_basic: str = "sentence-transformers/all-MiniLM-L12-v2",
-        embedding_model_pro: str = "intfloat/e5-base-v2",
-        splade_model: str = "naver/efficient-splade-V-large-doc",
-        rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    ):
-        self.mode = mode
-        self.data_path = Path(data_path)
-        self.device = device
-        self._token_re = re.compile(r"\w+", re.UNICODE)
+        db_path: str = "data/rag/chroma_db",
+        collection_name: str = "clickup_tasks",
+        model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
+    ) -> None:
+        print("🧠 Inicializando SemanticSearch...")
+        self.model = SentenceTransformer(model_name)
+        self.client = chromadb.PersistentClient(path=db_path)
+        self.collection = self.client.get_or_create_collection(collection_name)
 
-        print(f"🚀 Inicializando HybridSearch en modo '{mode}' ({device})")
+    def query(self, query_text: str, n_results: int = 10) -> QueryResult:
+        query_emb = _ensure_ndarray(self.model.encode(query_text))
+        return self.collection.query(query_embeddings=[query_emb.tolist()], n_results=n_results)
 
-        # --- Cargar datos ---
-        self.chunks = self._load_chunks()
-        self.docs = [c["text"] for c in self.chunks]
-        self.metadatas = [c["metadata"] for c in self.chunks]
 
-        # --- Modelos ---
-        if self.mode == "pro":
-            print("🧠 Cargando modelo de embeddings (E5-base)...")
-            self.embedding_model = SentenceTransformer(embedding_model_pro, device=device)
-            print("🧩 Cargando modelo SPLADE para búsqueda lexical...")
-            self.splade_tokenizer = AutoTokenizer.from_pretrained(splade_model)
-            self.splade_model = AutoModel.from_pretrained(splade_model).to(device)
-        else:
-            print("🧠 Cargando modelo de embeddings (MiniLM)...")
-            self.embedding_model = SentenceTransformer(embedding_model_basic, device=device)
-            print("🔤 Construyendo índice BM25...")
-            tokenized_docs = [self._tokenize(d) for d in self.docs]
-            self.bm25 = BM25Okapi(tokenized_docs)
+# ==============================
+# 2) PROXIMITY SEARCH (MiniLM)
+# ==============================
+class ProximitySearch:
+    """Consulta alternativa (usando el mismo modelo MiniLM para compatibilidad)."""
+    def __init__(
+        self,
+        db_path: str = "data/rag/chroma_db",
+        collection_name: str = "clickup_tasks",
+        model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
+    ) -> None:
+        print("📍 Inicializando ProximitySearch...")
+        self.model = SentenceTransformer(model_name)
+        self.client = chromadb.PersistentClient(path=db_path)
+        self.collection = self.client.get_or_create_collection(collection_name)
 
-        print("⚖️ Cargando modelo de re-ranking...")
-        self.rerank_model = CrossEncoder(rerank_model, device=device)
+    def query(self, query_text: str, n_results: int = 10) -> QueryResult:
+        query_emb = _ensure_ndarray(self.model.encode(query_text))
+        return self.collection.query(query_embeddings=[query_emb.tolist()], n_results=n_results)
 
-        # --- Generar embeddings semánticos ---
-        print("🧬 Generando embeddings de documentos...")
-        self.embeddings = self.embedding_model.encode(
-            self.docs, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True
-        )
 
-    # =========================================================
-    # UTILIDADES INTERNAS
-    # =========================================================
-    def _load_chunks(self) -> List[Dict[str, Any]]:
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"No se encontró {self.data_path}")
-        with open(self.data_path, "r", encoding="utf-8") as f:
-            return [json.loads(line) for line in f]
+# ==============================
+# 3) RERANKER (Cross-Encoder)
+# ==============================
+class Reranker:
+    """Modelo CrossEncoder TinyBERT para reordenar resultados combinados."""
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-TinyBERT-L-2-v2") -> None:
+        print("⚖️ Inicializando Reranker (TinyBERT)...")
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name).to(self.device)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    def _tokenize(self, text: str) -> List[str]:
-        return [t.lower() for t in self._token_re.findall(text or "")]
-
-    # =========================================================
-    # BÚSQUEDA LEXICAL (BM25 o SPLADE)
-    # =========================================================
-    def keyword_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Búsqueda lexical según el modo."""
-        print(f"\n🔤 Búsqueda lexical para: '{query}'")
-
-        if self.mode == "pro":
-            return self._splade_search(query, top_k)
-        else:
-            return self._bm25_search(query, top_k)
-
-    def _bm25_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        tokenized_query = self._tokenize(query)
-        scores = self.bm25.get_scores(tokenized_query)
-        top_idx = np.argsort(scores)[::-1][:top_k]
-        return [{"text": self.docs[i], "score": float(scores[i]), "metadata": self.metadatas[i]} for i in top_idx]
-
-    def _splade_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Búsqueda lexical con modelo SPLADE (sparse retriever)."""
-        self.splade_model.eval()
-        with torch.no_grad():
-            inputs = self.splade_tokenizer(self.docs, padding=True, truncation=True, return_tensors="pt").to(self.device)
-            doc_embs = self.splade_model(**inputs).last_hidden_state.mean(dim=1)
-            q_inputs = self.splade_tokenizer(query, return_tensors="pt").to(self.device)
-            q_emb = self.splade_model(**q_inputs).last_hidden_state.mean(dim=1)
-            sim = torch.nn.functional.cosine_similarity(q_emb, doc_embs)
-            top_idx = torch.topk(sim, k=min(top_k, len(self.docs))).indices.cpu().numpy()
-
-        return [{"text": self.docs[i], "score": float(sim[i]), "metadata": self.metadatas[i]} for i in top_idx]
-
-    # =========================================================
-    # BÚSQUEDA SEMÁNTICA (EMBEDDINGS)
-    # =========================================================
-    def semantic_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Búsqueda semántica basada en embeddings (MiniLM o E5-base)."""
-        query_emb = self.embedding_model.encode([query], normalize_embeddings=True)
-        sim = cosine_similarity(query_emb, self.embeddings)[0]
-        top_idx = np.argsort(sim)[::-1][:top_k]
-        results = [{"text": self.docs[i], "score": float(sim[i]), "metadata": self.metadatas[i]} for i in top_idx]
-        print(f"\n🧠 Resultados semánticos para: '{query}'")
-        for r in results:
-            print(f" - ({r['score']:.3f}) {r['text'][:100]}...")
-        return results
-
-    # =========================================================
-    # RERANKING (CROSS-ENCODER)
-    # =========================================================
-    def rerank(self, query: str, results: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
-        """Reordena resultados con CrossEncoder."""
-        if not results:
-            print("⚠️ No hay resultados para re-rankear.")
+    def rerank_documents(
+        self,
+        query: str,
+        documents: Sequence[str],
+        metadatas: Sequence[Mapping[str, Any]],
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        if not documents:
             return []
 
-        pairs = [[query, r["text"]] for r in results]
-        scores = self.rerank_model.predict(pairs)
-        for i, s in enumerate(scores):
-            results[i]["rerank_score"] = float(s)
-        ranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+        inputs = [f"{query} [SEP] {doc}" for doc in documents]
+        encodings = self.tokenizer(inputs, truncation=True, padding=True, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**encodings)
+        scores = outputs.logits.squeeze().tolist()
+        if isinstance(scores, float):
+            scores = [scores]
 
-        print(f"\n⚖️ Resultados re-rankeados para: '{query}'")
-        for r in ranked:
-            print(f" - ({r['rerank_score']:.3f}) {r['text'][:100]}...")
-        return ranked
+        metas_list: List[Dict[str, Any]] = _metas_as_dicts(metadatas)
 
-    # =========================================================
-    # ALIAS DE COMPATIBILIDAD
-    # =========================================================
-    def search_semantic(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Alias para semantic_search(), pensado para compatibilidad con tests o integraciones
-        donde se espera un método 'search_semantic'.
-        """
-        return self.semantic_search(query, top_k)
+        items: List[Dict[str, Any]] = [
+            {"text": doc, "metadata": meta, "score": float(score)}
+            for doc, meta, score in zip(documents, metas_list, scores)
+        ]
+        items_sorted = sorted(items, key=lambda x: x["score"], reverse=True)
+        return items_sorted[:top_k]
+
+
+# ==============================
+# 4) HYBRID SEARCH (pipeline)
+# ==============================
+class HybridSearch:
+    """Híbrido final sin embeddings locales, sobre ChromaDB persistente."""
+    def __init__(self, db_path: str = "data/rag/chroma_db", collection_name: str = "clickup_tasks") -> None:
+        print(f"🚀 Inicializando HybridSearch (colección '{collection_name}' en {db_path})")
+        self.semantic = SemanticSearch(db_path=db_path, collection_name=collection_name)
+        self.proximity = ProximitySearch(db_path=db_path, collection_name=collection_name)
+        self.reranker = Reranker()
+
+    def run_query(self, query: str) -> Dict[str, Any]:
+        print(f"\n🔎 Ejecutando búsqueda híbrida para: '{query}'")
+
+        # 1) Semántica (top 10)
+        sem_res: QueryResult = self.semantic.query(query, n_results=10)
+        sem_docs: List[str] = cast(List[str], _get_first(sem_res, "documents"))
+        sem_metas: List[Mapping[str, Any]] = cast(List[Mapping[str, Any]], _get_first(sem_res, "metadatas"))
+
+        print("\n🧠 Top 10 resultados SEMÁNTICOS:")
+        for i, doc in enumerate(sem_docs):
+            print(f"{i+1:2d}. {doc[:120]}...")
+
+        # 2) Proximidad (top 10)
+        prox_res: QueryResult = self.proximity.query(query, n_results=10)
+        prox_docs: List[str] = cast(List[str], _get_first(prox_res, "documents"))
+        prox_metas: List[Mapping[str, Any]] = cast(List[Mapping[str, Any]], _get_first(prox_res, "metadatas"))
+
+        print("\n📍 Top 10 resultados PROXIMIDAD:")
+        for i, doc in enumerate(prox_docs):
+            print(f"{i+1:2d}. {doc[:120]}...")
+
+        # 3) Combinar para rerank
+        combined_docs: List[str] = sem_docs + prox_docs
+        combined_metas: List[Mapping[str, Any]] = sem_metas + prox_metas
+
+        # 4) Rerank (top 5)
+        reranked: List[Dict[str, Any]] = self.reranker.rerank_documents(
+            query,
+            combined_docs,
+            combined_metas,
+            top_k=5
+        )
+
+        print("\n⚖️ Top 5 resultados RERANKEADOS:")
+        for i, r in enumerate(reranked):
+            print(f"{i+1:2d}. ({r['score']:.3f}) {r['text'][:120]}...")
+
+        return {
+            "semantic_top10": sem_res,
+            "proximity_top10": prox_res,
+            "reranked_top5": reranked,
+        }
+
+
+# =========================================================
+# BLOQUE INTERACTIVO
+# =========================================================
+if __name__ == "__main__":
+    print("\n🔍 *** MODO INTERACTIVO HYBRID SEARCH ***")
+    print("Escribe tu consulta (o 'salir' para terminar)\n")
+
+    hs = HybridSearch()
+
+    while True:
+        query_text = input("👉 Introduce tu consulta: ").strip()
+        if not query_text or query_text.lower() in {"salir", "exit", "q"}:
+            print("\n👋 Saliendo de HybridSearch.")
+            break
+
+        print("\n" + "=" * 80)
+        hs.run_query(query_text)
+        print("=" * 80 + "\n")
