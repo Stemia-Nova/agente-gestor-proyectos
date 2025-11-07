@@ -1,17 +1,9 @@
-import chainlit as cl
+"""Entrypoint mínimo para Chainlit.
 
+Este archivo ya no define handlers para evitar respuestas duplicadas (echo).
+Importamos `chatbot.handlers` para que los handlers definidos en ese paquete
+se registren automáticamente con Chainlit.
+"""
 
-@cl.on_chat_start
-async def start():
-    """Mensaje de bienvenida cuando arranca la sesión de chat."""
-    await cl.Message(
-        content="¡Hola! Soy tu asistente. Escribe algo y te responderé."
-    ).send()
-
-
-@cl.on_message
-async def on_message(message: cl.Message):
-    """Ejemplo mínimo: hace eco del mensaje recibido."""
-    # `message` normalmente tiene el atributo `content`
-    text = getattr(message, "content", str(message))
-    await cl.Message(content=f"Has dicho: {text}").send()
+# Importar los handlers del paquete chatbot (registro de handlers ocurre en ese módulo).
+import chatbot.handlers  # noqa: F401

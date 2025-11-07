@@ -54,6 +54,7 @@ opensearch-py==2.7.1    # integración con OpenSearch (opcional)
 transformers==4.45.2    # modelos Hugging Face
 torch==2.4.0            # motor de inferencia (GPU/CPU)
 datasets==3.0.1         # utilidades de tokenización / evaluación
+openai>=1.0.0
 
 # ==========================================================
 # 🔸 API / Servidor
