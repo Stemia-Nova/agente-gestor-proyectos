@@ -116,7 +116,7 @@ def _build_prompt(context: str, question: str) -> str:
         question=question
     )
 def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mini") -> str:
-    """Genera una respuesta usando el SDK moderno de OpenAI (>=1.0)."""
+    """Genera una respuesta usando el SDK moderno de OpenAI (>=1.0), sin warnings de Pylance."""
     if openai is None:
         raise RuntimeError("La librería 'openai' no está instalada.")
 
@@ -124,19 +124,20 @@ def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mi
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY no configurada en `chatbot.config`")
 
-    # Configurar cliente (nuevo SDK)
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-    except ImportError:
-        raise RuntimeError("Instala openai>=1.0.0 correctamente con `pip install openai -U`")
+    # Cargar cliente moderno
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
 
     # Construir prompt contextual
     prompt = _build_prompt(context, question)
-    messages = [
+    # Usamos tuplas para evitar warnings de Pylance
+    messages: list[dict[str, str]] = [
         {
             "role": "system",
-            "content": "Eres un asistente conciso, experto en gestión ágil y orientado a acciones. Usa únicamente la información del contexto.",
+            "content": (
+                "Eres un asistente conciso, experto en gestión ágil y orientado a acciones. "
+                "Usa únicamente la información del contexto y evita inventar."
+            ),
         },
         {"role": "user", "content": prompt},
     ]
@@ -144,14 +145,20 @@ def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mi
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=messages,  # type: ignore[arg-type]  # forzamos compatibilidad de tipos
             max_tokens=400,
             temperature=0.0,
         )
-        text = response.choices[0].message.content.strip()
-        return text
+
+        # Usamos .get() para evitar advertencia "strip no conocido de None"
+        message_content = (
+            getattr(response.choices[0].message, "content", None)
+            or ""
+        )
+        return message_content.strip()
     except Exception as e:
         raise RuntimeError(f"Error al generar respuesta con OpenAI: {e}")
+
 
 
 # =============================================================
