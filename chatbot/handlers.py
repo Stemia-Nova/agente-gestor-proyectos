@@ -84,37 +84,30 @@ def _format_results(results: list) -> str:
     return "\n".join(parts)
 
 
-# =============================================================
-# Detección de intención
-# =============================================================
-def _detect_count_intent(text: str) -> Optional[dict]:
-    """Detecta si la pregunta es de tipo conteo (cuántas tareas, sprints, bloqueadas, etc.)."""
-    q = text.lower()
-    if "cuántas" in q or "cuantos" in q:
-        if any(k in q for k in ["completadas", "finalizadas", "hechas", "cerradas"]):
-            return {"filters": {"status": "finalizada"}, "field": "tareas completadas"}
-        if any(k in q for k in ["bloqueadas", "impedidas"]):
-            return {"filters": {"is_blocked": True}, "field": "tareas bloqueadas"}
-        if any(k in q for k in ["urgentes", "urgente"]):
-            return {"filters": {"priority": "urgente"}, "field": "tareas urgentes"}
-        if "tareas" in q:
-            return {"filters": None, "field": "tareas"}
-    if "cuántos" in q or "cuantas" in q:
-        if "sprints" in q:
-            return {"filters": None, "field": "sprints"}
-    return None
+async def _run_semantic_search(query: str, top_k: int = 5):
+    """Ejecuta semantic_search y rerank en un executor para no bloquear el event loop."""
+    hs = _ensure_hs()
+    loop = asyncio.get_running_loop()
+
+    results = await loop.run_in_executor(None, hs.semantic_search, query, top_k)
+    # Re-rankeamos (también en executor)
+    ranked = await loop.run_in_executor(None, hs.rerank, query, results, min(3, len(results)))
+    return ranked
 
 
-# =============================================================
-# OpenAI utilidades
-# =============================================================
-def _build_prompt(context: str, question: str) -> str:
-    """Construye y devuelve el prompt exacto que se envía al modelo."""
-    return prompts.RAG_CONTEXT_PROMPT.format(
-        system=prompts.SYSTEM_INSTRUCTIONS,
-        context=context,
-        question=question
-    )
+from typing import Optional
+
+
+def _build_prompt(context: str, question: str, system: str | None = None) -> str:
+    """Construye y devuelve el prompt exacto que se envía al modelo.
+
+    Inserta las `SYSTEM_INSTRUCTIONS` si no se proporcionan explícitamente.
+    """
+    if system is None:
+        system = getattr(prompts, "SYSTEM_INSTRUCTIONS", "")
+    return prompts.RAG_CONTEXT_PROMPT.format(system=system, context=context, question=question)
+
+
 def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mini") -> str:
     """Genera una respuesta usando el SDK moderno de OpenAI (>=1.0), sin warnings de Pylance."""
     if openai is None:
