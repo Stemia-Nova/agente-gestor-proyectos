@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HybridSearch Pro MAX Stable
----------------------------
-Versión final sin warnings de Pylance ni errores de tipo.
-Incluye:
- - SentenceTransformer para embeddings
- - DistilBERT para intención
- - CrossEncoder para rerank
- - Filtrado automático por sprint y estado
+HybridSearch — versión extendida con GPT-4o-mini
+------------------------------------------------
+Motor central del agente gestor:
+ • Recuperación híbrida (embeddings + rerank)
+ • Integración con ChromaDB persistente
+ • Generación natural de respuesta usando GPT-4o-mini
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple, Sequence, Optional, cast
+from typing import Any, Dict, List, Tuple, Optional, Sequence, cast
 import numpy as np
 import torch
-from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import chromadb
-
-# Tipos base
-DocList = List[str]
-MetaList = List[Dict[str, Any]]
-QueryResult = Dict[str, Any]
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.cross_encoder import CrossEncoder
+from openai import OpenAI
 
 
 class HybridSearch:
+    """Motor principal de búsqueda híbrida + generación conversacional."""
+
     def __init__(
         self,
         collection_name: str = "clickup_tasks",
@@ -34,196 +30,161 @@ class HybridSearch:
         self.db_path = db_path or "data/rag/chroma_db"
         self.client = chromadb.PersistentClient(path=self.db_path)
         self.collection = self.client.get_or_create_collection(collection_name)
+        print(f"✅ HybridSearch inicializado sobre colección '{collection_name}'.")
 
-        print(f"✅ Inicializando HybridSearchXL sobre colección '{collection_name}'...")
+        # --- Inicialización diferida (lazy loading) ---
+        self._embedder: Optional[SentenceTransformer] = None
+        self._cross_encoder: Optional[CrossEncoder] = None
 
-        # Embeddings (MiniLM)
-        self.embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L12-v2")
-
-        # Dispositivo
+        # Cliente OpenAI
+        self.llm = OpenAI()  # usa la variable de entorno OPENAI_API_KEY
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Intención (DistilBERT)
-        self.int_tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
-        self.int_model = AutoModelForSequenceClassification.from_pretrained(
-            "bhadresh-savani/distilbert-base-uncased-emotion"
-        ).to(self.device)
+    # =============================================================
+    # Embeddings y búsqueda
+    # =============================================================
+    def _ensure_embedder(self) -> SentenceTransformer:
+        if self._embedder is None:
+            print("🧠 Cargando modelo de embeddings MiniLM...")
+            self._embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L12-v2")
+        return self._embedder
 
-        # Reranker (MiniLM CrossEncoder)
-        self.rerank_tokenizer = AutoTokenizer.from_pretrained("cross-encoder/ms-marco-MiniLM-L-12-v2")
-        self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
-            "cross-encoder/ms-marco-MiniLM-L-12-v2"
-        ).to(self.device)
+    def _ensure_reranker(self) -> CrossEncoder:
+        # Backwards-compatible alias for reranker; delegate to the cross-encoder initializer.
+        return self._ensure_cross_encoder()
 
-    # ================================================================
-    # 🔍 BÚSQUEDA PRINCIPAL
-    # ================================================================
-    def search(self, query: str, top_k: int = 10) -> Tuple[DocList, MetaList]:
-        """Ejecuta búsqueda híbrida (embeddings + rerank + intención)."""
-        try:
-            q_emb = self._embed_query(query)
+    def _ensure_cross_encoder(self) -> CrossEncoder:
+        if self._cross_encoder is None:
+            print("🧩 Cargando modelo de reranking (MiniLM CrossEncoder)...")
+            # CrossEncoder provides a convenient .predict(...) API for pairwise scoring
+            self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2", device=str(self.device))
+        return self._cross_encoder
 
-            results: QueryResult = self.collection.query(
-                query_embeddings=[q_emb],
-                n_results=int(top_k),
-                include=["documents", "metadatas"],  # type: ignore[arg-type]
-            )
+    def _embed_query(self, text: str) -> List[float]:
+        model = self._ensure_embedder()
+        emb = model.encode(text, convert_to_numpy=True)
+        return emb.astype(np.float32).tolist()
 
-            docs = self._safe_get_strings(results, "documents")
-            metas = self._safe_get_list(results, "metadatas")
+    def search(self, query: str, top_k: int = 8) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Devuelve documentos relevantes según embeddings + rerank."""
+        q_emb = self._embed_query(query)
+        res = self.collection.query(
+            query_embeddings=[q_emb],
+            n_results=top_k,
+            include=cast(Any, ["documents", "metadatas"])
+        )
 
-            if not docs or not metas:
-                return [], []
+        # Safely handle cases where the collection returns None for the lists
+        docs_list = res.get("documents") or [[]]
+        metas_list = res.get("metadatas") or [[]]
 
-            docs, metas = self._rerank(query, docs, metas)
-            docs, metas = self._filter_by_intent(query, docs, metas)
+        docs = cast(
+            List[str],
+            docs_list[0] if isinstance(docs_list, (list, tuple)) and len(docs_list) > 0 and docs_list[0] is not None else []
+        )
+        metas = cast(
+            List[Dict[str, Any]],
+            metas_list[0] if isinstance(metas_list, (list, tuple)) and len(metas_list) > 0 and metas_list[0] is not None else []
+        )
 
-            # Reordena priorizando sprint actual y urgentes
-            metas_sorted = sorted(
-                metas,
-                key=lambda m: (
-                    0 if str(m.get("sprint_status", "")).lower() == "actual" else 1,
-                    -1 if str(m.get("priority", "")).lower() in ("alta", "urgente", "high") else 0,
-                    1 if str(m.get("status", "")).lower() in ("completado", "cerrado") else 0,
-                ),
-            )
-            ordered_docs = [docs[metas.index(m)] for m in metas_sorted if m in metas]
-            return ordered_docs, metas_sorted
-
-        except Exception as e:
-            print(f"⚠️ Error en HybridSearch.search(): {e}")
+        if not docs or not metas:
             return [], []
 
-    # ================================================================
-    # 🧠 INTERNAS
-    # ================================================================
-    def _embed_query(self, text: str) -> List[float]:
-        emb = cast(Any, self.embedder.encode(text, convert_to_numpy=True))
-        if emb is None:
-            return []
-        if isinstance(emb, np.ndarray):
-            return emb.astype(np.float32).tolist()
-        # Handle tensor-like objects with .numpy()
-        if hasattr(emb, "numpy"):
-            try:
-                arr = emb.numpy()
-                return np.asarray(arr, dtype=np.float32).tolist()
-            except Exception:
-                pass
-        # General iterable fallback
-        if hasattr(emb, "__iter__"):
-            return [float(x) for x in emb]
-        # Final safe fallback
-        return []
+        docs, metas = self._rerank(query, docs, metas)
+        return list(docs), list(metas)
 
-    def _safe_get_list(self, results: QueryResult, key: str) -> List[Any]:
-        """Devuelve results[key][0] si existe, sino []."""
-        raw = results.get(key)
-        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], list):
-            return cast(List[Any], raw[0])
-        return []
-
-    def _safe_get_strings(self, results: QueryResult, key: str) -> List[str]:
-        """Devuelve results[key][0] como lista de strings (normalizando listas internas)."""
-        raw = results.get(key)
-        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], list):
-            inner = raw[0]
-            normalized: List[str] = []
-            for item in inner:
-                if isinstance(item, str):
-                    normalized.append(item)
-                elif isinstance(item, (list, tuple)):
-                    # unir elementos internos a un solo string
-                    normalized.append(" ".join(map(str, item)))
-                else:
-                    normalized.append(str(item))
-            return normalized
-        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], str):
-            return cast(List[str], raw)
-        return []
-
-    def _detect_intent(self, text: str) -> str:
-        """Detecta intención de consulta."""
-        try:
-            tokens = self.int_tokenizer(text, truncation=True, padding=True, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                logits = self.int_model(**tokens).logits
-            probs = torch.softmax(logits, dim=1)
-            idx = torch.argmax(probs, dim=1).item()
-            mapping = {0: "bloqueadas", 1: "pendientes", 2: "progreso", 3: "completadas", 4: "general"}
-            return mapping.get(int(idx), "general")
-        except Exception:
-            return "general"
-
+    # =============================================================
+    # Reranking con CrossEncoder
+    # =============================================================
     def _rerank(
-        self, query: str, docs: Sequence[str], metas: Sequence[Dict[str, Any]]
-    ) -> Tuple[DocList, MetaList]:
-        """Reranking contextual con CrossEncoder."""
+        self,
+        query: str,
+        docs: Sequence[str],
+        metas: Sequence[Dict[str, Any]],
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        cross = self._ensure_cross_encoder()
+
+        # Prepara pares (query, doc)
+        pairs = [(query, d) for d in docs]
+
+        # Predice scores; devuelve np.array de shape (len(docs),)
+        scores = cross.predict(pairs, convert_to_numpy=True)
+        # Orden descendente por score
+        idxs = np.argsort(-scores).tolist()
+
+        docs_sorted = [docs[i] for i in idxs]
+        metas_sorted = [metas[i] for i in idxs]
+        # Asegurar el tipo esperado por el anotador: List[str], List[Dict[str, Any]]
+        return cast(List[str], docs_sorted), cast(List[Dict[str, Any]], metas_sorted)
+
+    # =============================================================
+    # Generador con GPT-4o-mini
+    # =============================================================
+    def answer(self, query: str, top_k: int = 6, temperature: float = 0.4) -> str:
+        """Genera respuesta contextualizada con GPT-4o-mini."""
         try:
-            # Normalize docs to a list of strings to satisfy the declared return types
-            docs_list: List[str] = []
-            for d in docs:
-                if isinstance(d, str):
-                    docs_list.append(d)
-                elif isinstance(d, (list, tuple)):
-                    docs_list.append(" ".join(map(str, d)))
-                else:
-                    docs_list.append(str(d))
+            docs, metas = self.search(query, top_k=top_k)
+            if not docs:
+                return "No encontré información relevante para esa consulta."
 
-            pairs = [(query, doc) for doc in docs_list]
-            enc = self.rerank_tokenizer(
-                [p[0] for p in pairs],
-                [p[1] for p in pairs],
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-            ).to(self.device)
-            with torch.no_grad():
-                scores = self.rerank_model(**enc).logits.squeeze(-1)
-            idxs = torch.argsort(scores, descending=True).tolist()
-            reranked_docs = [docs_list[i] for i in idxs]
-            reranked_metas = [metas[i] for i in idxs]
-            return reranked_docs, reranked_metas
+            # Contexto estructurado
+            context = "\n".join(
+                [
+                    f"- {m.get('name', 'sin nombre')} ({m.get('status', 'sin estado')}, "
+                    f"prioridad {m.get('priority', 'sin prioridad')}, sprint {m.get('sprint', 'sin sprint')})"
+                    for m in metas[:5]
+                ]
+            )
+
+            system_prompt = (
+                "Eres un asistente experto en gestión de proyectos ágiles. "
+                "Tienes acceso a datos de tareas de ClickUp y sprints. "
+                "Usa el contexto proporcionado para responder de forma breve, clara y útil."
+            )
+
+            user_prompt = f"""
+Pregunta del usuario:
+{query}
+
+Contexto relevante:
+{context}
+
+Responde con tono profesional tipo Scrum Master.
+"""
+
+            completion = self.llm.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+            )
+
+            # Safely extract content from the completion object/dict, handling None or unexpected shapes
+            content = None
+            try:
+                # Try attribute-style access first
+                choices = getattr(completion, "choices", None)
+                if choices is None and isinstance(completion, dict):
+                    choices = completion.get("choices")
+                if choices:
+                    first_choice = choices[0]
+                    message = getattr(first_choice, "message", None)
+                    if message is None and isinstance(first_choice, dict):
+                        message = first_choice.get("message")
+                    if message:
+                        content = getattr(message, "content", None)
+                        if content is None and isinstance(message, dict):
+                            content = message.get("content")
+            except Exception:
+                content = None
+
+            if content:
+                return content.strip()
+            else:
+                return "No se obtuvo contenido del modelo."
+
         except Exception as e:
-            print(f"⚠️ Error en rerank: {e}")
-            # Fall back to stringified docs if something goes wrong
-            fallback_docs = [
-                d if isinstance(d, str) else " ".join(map(str, d)) if isinstance(d, (list, tuple)) else str(d)
-                for d in docs
-            ]
-            return fallback_docs, list(metas)
-
-    def _filter_by_intent(
-        self, query: str, docs: Sequence[str], metas: Sequence[Dict[str, Any]]
-    ) -> Tuple[DocList, MetaList]:
-        """Filtrado por intención y contexto (bloqueadas, pendientes, completadas, etc.)."""
-        q = query.lower()
-        intent = self._detect_intent(query).lower()
-
-        filtered_docs: DocList = []
-        filtered_metas: MetaList = []
-
-        for doc, meta in zip(docs, metas):
-            status = str(meta.get("status", "")).lower()
-            blocked = bool(meta.get("is_blocked", False))
-            sprint_status = str(meta.get("sprint_status", "")).lower()
-
-            keep = True
-            if intent == "bloqueadas" or "bloquead" in q:
-                keep = blocked and sprint_status == "actual"
-            elif intent in ["pendientes", "progreso"]:
-                keep = any(k in status for k in ["pendiente", "progress", "in progress", "curso"])
-            elif intent == "completadas":
-                keep = any(k in status for k in ["completado", "finalizado", "cerrado"])
-            elif "sprint actual" in q:
-                keep = sprint_status == "actual"
-            elif "sprint cerrado" in q:
-                keep = sprint_status == "cerrado"
-
-            if keep:
-                filtered_docs.append(doc)
-                filtered_metas.append(meta)
-
-        if not filtered_docs:
-            return list(docs), list(metas)
-        return filtered_docs, filtered_metas
+            print(f"⚠️ Error en HybridSearch.answer(): {e}")
+            return f"❌ No se pudo generar la respuesta: {e}"
