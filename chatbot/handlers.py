@@ -1,279 +1,197 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Handlers para el Agente Gestor de Proyectos (Chainlit).
+chatbot/handlers.py
+-------------------
+Versión refinada para integración con `chatbot/prompts.py`.
 
-✅ Soporta:
- - Preguntas de conteo: tareas totales, por sprint, completadas, bloqueadas, urgentes, etc.
- - Preguntas sobre sprints: activos, cerrados, listado de sprints, sprint actual.
- - Búsqueda semántica híbrida vía HybridSearch (embeddings + BM25 + reranker).
- - Síntesis con OpenAI (SDK moderno >= 1.0.0).
+✔ Integra HybridSearch (RAG)
+✔ Usa prompts especializados (Scrum/Agile)
+✔ Genera respuestas naturales o JSON según el tipo de consulta
+✔ Incluye memoria conversacional, comandos y debug
+✔ Compatible con Chainlit 2.8.x y `main.py` clásico
 """
 
-import re
-import asyncio
 import os
-import json
-import chainlit as cl
-from typing import Optional, Dict, Any
-from pathlib import Path
+import asyncio
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+from dotenv import load_dotenv
+from openai import OpenAI
 from utils.hybrid_search import HybridSearch
-from chatbot import prompts
-from chatbot import config as chat_config
+from chatbot import prompts  # importamos tu prompts.py
+
+# ======================================================
+# ⚙️ CARGA DE ENTORNO
+# ======================================================
+load_dotenv()
+
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+REQUEST_TIMEOUT = float(os.getenv("OPENAI_REQUEST_TIMEOUT", 60))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
+    client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+except Exception as e:
+    print(f"⚠️ No se pudo inicializar OpenAI: {e}")
+    client = None
+
+# Instanciar HybridSearch (sin parámetros, según tu clase actual)
+hybrid_search = HybridSearch()
+
+# ======================================================
+# 💾 MEMORIA CONVERSACIONAL
+# ======================================================
+_conversation_history: List[Dict[str, str]] = []
 
 
-# ================================================================
-# Inicialización del motor de búsqueda
-# ================================================================
-
-_HS_INSTANCE: Optional[HybridSearch] = None
-
-
-def _ensure_hs() -> HybridSearch:
-    """Devuelve la instancia global de HybridSearch (singleton)."""
-    global _HS_INSTANCE
-    if _HS_INSTANCE is None:
-        _HS_INSTANCE = HybridSearch(chroma_base=Path("data/rag/chroma_db"))
-    return _HS_INSTANCE
+def _log_conversation(q: str, r: str) -> None:
+    """Guarda en memoria las últimas interacciones."""
+    _conversation_history.append(
+        {"timestamp": datetime.now().isoformat(timespec="seconds"), "question": q, "answer": r}
+    )
+    if len(_conversation_history) > 5:
+        _conversation_history.pop(0)
 
 
-# ================================================================
-# Utilidades de formato
-# ================================================================
-
-def _extract_title(text: str) -> str:
-    m = re.search(r"La tarea '([^']+)'", text)
-    return m.group(1) if m else "(sin título)"
+def reset_memory() -> str:
+    _conversation_history.clear()
+    return "🧹 Memoria conversacional reiniciada."
 
 
-def _format_results(results: list) -> str:
-    """Formatea resultados del RAG de forma legible."""
-    unique = {}
-    for r in results:
-        tid = (r.get("metadata", {}) or {}).get("task_id")
-        if tid and tid not in unique:
-            unique[tid] = r
-    results = list(unique.values())
+# ======================================================
+# 🧮 UTILIDADES DE FORMATEO
+# ======================================================
 
-    parts = []
-    for i, r in enumerate(results, start=1):
-        meta = r.get("metadata", {}) or {}
-        task_id = meta.get("task_id", "-")
-        sprint = meta.get("sprint", "-")
-        project = meta.get("project", "-")
-        status = meta.get("status", "-")
-        priority = meta.get("priority", "sin prioridad")
-        assignees = meta.get("assignees", "sin asignar")
-        title = _extract_title(r.get("text", ""))
-        snippet = r.get("text", "").strip().replace("\n", " ")
-        if len(snippet) > 300:
-            snippet = snippet[:300].rstrip() + "..."
-        parts.append(
-            f"{i}. [{task_id}] '{title}'\n"
-            f"   Proyecto: {project} | Sprint: {sprint}\n"
-            f"   Estado: {status} | Prioridad: {priority} | Asignado: {assignees}\n"
-            f"   Descripción: {snippet}\n"
+def summarize_context(meta: List[Dict[str, Any]]) -> str:
+    """Crea un resumen textual de las tareas recuperadas."""
+    if not meta:
+        return "(sin contexto)"
+    resumen = []
+    for m in meta[:5]:
+        resumen.append(
+            f"- {m.get('name','Tarea sin nombre')} "
+            f"(Sprint {m.get('sprint','?')}) — "
+            f"{m.get('status','?')}, "
+            f"{m.get('assignees','Sin asignar')}, "
+            f"prioridad: {m.get('priority','Sin prioridad')}."
         )
-    return "\n".join(parts)
+    return "\n".join(resumen)
 
 
-# ================================================================
-# Detección de intención
-# ================================================================
+# ======================================================
+# 🧠 GENERACIÓN CON OPENAI
+# ======================================================
 
-def _detect_count_intent(text: str) -> Optional[Dict[str, Any]]:
-    """Detecta intenciones de conteo o consultas estructuradas."""
-    q = text.lower()
-    q = q.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+async def _synthesize_openai(question: str, context: str) -> str:
+    """Genera respuesta contextual con OpenAI o fallback."""
+    context = str(context or "")
+    if not client:
+        return prompts.DEFAULT_ECHO_PREFIX + " " + context if context.strip() else prompts.RAG_NO_RESULTS
 
-    # --- Conteos de tareas ---
-    if any(x in q for x in ["cuantos", "cuantas", "numero de", "total de"]):
-        if "sprints" in q:
-            return {"type": "sprints"}
-        if any(k in q for k in ["completadas", "finalizadas", "cerradas", "hechas", "done"]):
-            return {"filters": {"status": "finalizada"}, "field": "tareas completadas"}
-        if any(k in q for k in ["bloqueadas", "impedidas", "bloqueo"]):
-            return {"filters": {"is_blocked": True}, "field": "tareas bloqueadas"}
-        if any(k in q for k in ["urgentes", "urgente"]):
-            return {"filters": {"priority": "urgente"}, "field": "tareas urgentes"}
-        if "tareas" in q:
-            return {"filters": None, "field": "tareas"}
-
-    # --- Consultas sobre sprints ---
-    if any(k in q for k in ["sprint actual", "sprint activo", "que sprint"]):
-        return {"type": "current_sprint"}
-    if any(k in q for k in ["sprints cerrados", "finalizados", "terminados"]):
-        return {"type": "closed_sprints"}
-
-    # --- Conteo dentro de un sprint específico ---
-    sprint_match = re.search(r"sprint\s+(\d+)", q)
-    if sprint_match:
-        sprint_name = f"Sprint {sprint_match.group(1)}"
-        if "completadas" in q or "finalizadas" in q:
-            return {"filters": {"status": "finalizada"}, "field": "tareas completadas", "scope": sprint_name}
-        if "bloqueadas" in q:
-            return {"filters": {"is_blocked": True}, "field": "tareas bloqueadas", "scope": sprint_name}
-        if "urgentes" in q:
-            return {"filters": {"priority": "urgente"}, "field": "tareas urgentes", "scope": sprint_name}
-        if "tareas" in q:
-            return {"filters": None, "field": "tareas", "scope": sprint_name}
-
-    return None
-
-
-def _answer_sprint_query(intent_type: str) -> str:
-    """Responde consultas relacionadas con los sprints."""
-    reg_path = Path("data/rag/chroma_db/index_registry.json")
-    if not reg_path.exists():
-        return "❌ No hay registro de sprints aún. Ejecuta el pipeline de indexado."
-
-    with open(reg_path, "r", encoding="utf-8") as f:
-        registry = json.load(f)
-
-    if not registry:
-        return "❌ No hay sprints registrados."
-
-    sprints = list(registry.keys())
-    active = [s for s, info in registry.items() if info.get("status") == "active"]
-    closed = [s for s, info in registry.items() if info.get("status") != "active"]
-
-    if intent_type == "sprints":
-        txt = ", ".join(sprints)
-        active_txt = f" El sprint actual es {active[-1]}." if active else ""
-        return f"Hay {len(sprints)} sprints ({txt}).{active_txt}"
-
-    if intent_type == "current_sprint":
-        return f"El sprint actual es {active[-1]}." if active else "No hay sprint activo registrado."
-
-    if intent_type == "closed_sprints":
-        if not closed:
-            return "No hay sprints cerrados."
-        return f"Los sprints cerrados son: {', '.join(closed)}."
-
-    return "No se pudo interpretar la consulta sobre sprints."
-
-
-# ================================================================
-# OpenAI utilities
-# ================================================================
-
-def _build_prompt(context: str, question: str, system: Optional[str] = None) -> str:
-    """Construye y devuelve el prompt contextual completo."""
-    if system is None:
-        system = getattr(prompts, "SYSTEM_INSTRUCTIONS", "")
-    return prompts.RAG_CONTEXT_PROMPT.format(system=system, context=context, question=question)
-
-
-def _synthesize_sync_openai(context: str, question: str, model: str = "gpt-4o-mini") -> str:
-    """Genera una respuesta con OpenAI (SDK moderno >=1.0)."""
-    if OpenAI is None:
-        raise RuntimeError("La librería 'openai' no está instalada.")
-
-    api_key = getattr(chat_config, "OPENAI_API_KEY", None)
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY no configurada en `chatbot.config`")
-
-    client = OpenAI(api_key=api_key)
-    prompt = _build_prompt(context, question)
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Eres un asistente experto en gestión ágil y Scrum. "
-                "Responde de forma breve, basada solo en el contexto, sin inventar información."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,  # type: ignore[arg-type]
-        max_tokens=400,
-        temperature=0.0,
+    # Construimos prompt contextual
+    user_prompt = prompts.RAG_CONTEXT_PROMPT.format(
+        system=prompts.SYSTEM_INSTRUCTIONS,
+        context=context,
+        question=question,
     )
 
-    message_content = getattr(response.choices[0].message, "content", None) or ""
-    return message_content.strip()
-
-
-# ================================================================
-# Chainlit Handlers
-# ================================================================
-
-@cl.on_chat_start
-async def start():
-    await cl.Message(content=prompts.WELCOME_PROMPT).send()
-
-
-@cl.on_message
-async def on_message(message: cl.Message):
-    text = (getattr(message, "content", "") or "").strip()
-    if not text:
-        await cl.Message(content="No he recibido ninguna pregunta.").send()
-        return
-
-    hs = _ensure_hs()
-    ql = text.lower()
-
-    # 1️⃣ Intento de conteo directo o pregunta estructurada
-    count_intent = _detect_count_intent(ql)
-    if count_intent:
+    # Intentamos hasta 3 veces (por rate limit)
+    for attempt in range(3):
         try:
-            # --- sprints ---
-            if count_intent.get("type") in ("sprints", "current_sprint", "closed_sprints"):
-                msg = _answer_sprint_query(count_intent["type"])
-                await cl.Message(content=msg).send()
-                return
-
-            # --- tareas ---
-            field = count_intent.get("field", "tareas")
-            filters = count_intent.get("filters") if isinstance(count_intent.get("filters"), dict) else None
-            scope = count_intent.get("scope", "all")
-
-            total = hs.count_tasks(filters=filters, scope=scope)
-            sprint_txt = f" en {scope}" if scope not in (None, "all") else ""
-            await cl.Message(content=f"Hay {total} {field}{sprint_txt}.").send()
-            return
-
+            completion = await asyncio.to_thread(
+                lambda: client.chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {"role": "system", "content": prompts.SYSTEM_INSTRUCTIONS},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.25,
+                    max_tokens=450,
+                    timeout=REQUEST_TIMEOUT,
+                )
+            )
+            return completion.choices[0].message.content.strip()
         except Exception as e:
-            await cl.Message(content=f"Error al procesar la consulta: {e}").send()
-            return
+            if "429" in str(e):
+                delay = (attempt + 1) * 2
+                print(f"⚠️ Rate limit alcanzado. Reintentando en {delay}s...")
+                time.sleep(delay)
+                continue
+            print(f"⚠️ Error con OpenAI: {e}")
+            break
 
-    # 2️⃣ Consulta semántica RAG normal
+    # Fallback textual
+    return (
+        "Respuesta basada en el contexto:\n" + context
+        if context.strip()
+        else prompts.RAG_NO_RESULTS
+    )
+
+
+# ======================================================
+# 💬 MANEJADOR PRINCIPAL
+# ======================================================
+
+async def handle_query(query: str) -> str:
+    """Maneja consultas del usuario con RAG, prompts y memoria."""
+    q = (query or "").strip()
+    if not q:
+        return "Por favor, escribe una pregunta."
+
+    # --- Comandos ---
+    if q.lower() in {"/ayuda", "ayuda"}:
+        return (
+            "📘 Comandos disponibles:\n"
+            "• /contexto → muestra las últimas interacciones.\n"
+            "• /reset → borra la memoria conversacional.\n"
+            "• /debug → muestra el último prompt enviado al modelo.\n"
+            "• /ayuda → muestra esta lista.\n"
+        )
+
+    if q.lower() in {"/reset", "reset"}:
+        return reset_memory()
+
+    if q.lower() in {"/contexto", "contexto"}:
+        if not _conversation_history:
+            return "🧠 Memoria vacía."
+        texto = "\n\n".join(
+            f"[{x['timestamp']}] Q: {x['question']}\nA: {x['answer']}"
+            for x in _conversation_history
+        )
+        return f"🧠 Memoria reciente:\n{texto}"
+
+    # --- Búsqueda híbrida ---
     try:
-        results = await asyncio.get_running_loop().run_in_executor(None, hs.query, text, 5, "all")
+        results, metas = hybrid_search.search(q, top_k=5)  # type: ignore[attr-defined]
     except Exception as e:
-        await cl.Message(content=f"Error durante la búsqueda de contexto: {e}").send()
-        return
+        r = f"⚠️ Error en la búsqueda: {e}"
+        _log_conversation(q, r)
+        return r
 
     if not results:
-        await cl.Message(content=prompts.RAG_NO_RESULTS).send()
-        return
+        r = prompts.RAG_NO_RESULTS
+        _log_conversation(q, r)
+        return r
 
-    context_text = _format_results(results)
-    prompt_text = _build_prompt(context_text, text)
-    debug = any(k in ql for k in ["debug", "mostrar contexto", "mostrar prompt"])
+    # --- Preparar contexto y generar respuesta ---
+    context_text = summarize_context(metas)
+    answer = await _synthesize_openai(q, context_text)
 
-    # 3️⃣ Síntesis con OpenAI
-    try:
-        use_openai = (OpenAI is not None) and bool(getattr(chat_config, "OPENAI_API_KEY", None))
-        if use_openai:
-            synthesized = await asyncio.get_running_loop().run_in_executor(
-                None, _synthesize_sync_openai, context_text, text
-            )
-            await cl.Message(content=synthesized).send()
-            if debug:
-                await cl.Message(content=f"🧩 DEBUG — Prompt usado:\n\n{prompt_text}").send()
-        else:
-            await cl.Message(content=f"He encontrado {len(results)} fragmentos relevantes:\n\n{context_text}").send()
-    except Exception as e:
-        await cl.Message(content=f"No fue posible sintetizar respuesta con OpenAI: {e}\n\n{context_text}").send()
+    # --- Guardar en memoria y devolver ---
+    _log_conversation(q, answer)
+    return answer
+
+
+# ======================================================
+# 🧩 DEBUG LOCAL
+# ======================================================
+
+if __name__ == "__main__":
+    import asyncio
+
+    print("🤖 Prueba manual del handler con prompts ágiles")
+    res = asyncio.run(handle_query("¿Qué tareas están bloqueadas?"))
+    print(res)

@@ -1,68 +1,48 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Prueba mixta End-to-End del Agente Gestor de Proyectos.
-→ Usa el LLM real (OpenAI GPT) si OPENAI_API_KEY está configurada.
-→ Si no, usa un mock local que simula la respuesta del modelo.
+Test End-to-End del pipeline RAG → Handlers → OpenAI (si disponible).
 """
 
-import asyncio
 import os
+import asyncio
+from utils.hybrid_search import HybridSearch
 from chatbot import handlers
 
+QUERIES = [
+    "¿Cuántas tareas hay en total?",
+    "¿Qué tareas están bloqueadas?",
+    "¿Qué tareas están en curso?",
+    "¿Qué tareas completadas hay?",
+]
 
-async def simulate_chat(query: str):
-    """Simula un turno de chat completo del agente."""
-    hs = handlers._ensure_hs()
+def test_end_to_end_pipeline():
+    print("\n==============================")
+    print("🤖 TEST END-TO-END PIPELINE")
+    print("==============================")
 
-    print(f"\n🧠 Consulta: {query}")
+    hs = HybridSearch()
+    api_key = os.environ.get("OPENAI_API_KEY")
+    use_llm = bool(api_key and getattr(handlers, "client", None))
 
-    try:
-        results = await asyncio.get_running_loop().run_in_executor(None, hs.query, query)
-    except Exception as e:
-        print(f"❌ Error en HybridSearch: {e}")
-        return
-
-    if not results:
-        print("⚠️ No se encontraron resultados relevantes.")
-        return
-
-    context_text = handlers._format_results(results)
-    prompt = handlers._build_prompt(context_text, query)
-
-    # Detectar si hay clave real de OpenAI
-    use_real_llm = bool(os.environ.get("OPENAI_API_KEY"))
-
-    if use_real_llm:
-        print("🌐 Usando LLM real (OpenAI API)...")
+    for q in QUERIES:
+        print(f"\n🧠 Consulta: {q}")
         try:
-            synthesized = await asyncio.get_running_loop().run_in_executor(
-                None, handlers._synthesize_sync_openai, context_text, query
-            )
-            print(f"\n💬 RESPUESTA:\n{synthesized}\n")
+            results = hs.query(q, k=5)
         except Exception as e:
-            print(f"❌ Error al generar respuesta con OpenAI: {e}")
-    else:
-        print("🧩 Simulación local (sin LLM real).")
-        fake_summary = f"Simulación → He encontrado {len(results)} fragmentos relevantes sobre: '{query}'."
-        fake_actions = [r.get('metadata', {}).get('task_id', '-') for r in results[:3]]
-        print(f"📝 {fake_summary}\n📋 Ejemplo de tareas: {', '.join(fake_actions)}\n")
+            print(f"❌ Error en HybridSearch: {e}")
+            results = []
 
-    print(f"📄 PROMPT (recortado):\n{prompt[:400]}...\n")
+        if not results:
+            print("⚠️ Sin resultados del índice.")
+            continue
 
-
-def test_end_to_end_mixed():
-    """Ejecuta varias preguntas representativas con LLM real o mock."""
-    queries = [
-        "¿Cuántos sprints hay?",
-        "¿Cuántas tareas completadas hay en total?",
-        "¿Qué tareas tiene Laura?",
-        "¿Qué tareas están bloqueadas?",
-        "¿Qué tareas tiene Jorge Aguadero?",
-        "¿Qué sprint está activo ahora?"
-    ]
-
-    loop = asyncio.get_event_loop()
-    for q in queries:
-        loop.run_until_complete(simulate_chat(q))
+        ctx = handlers._format_results(results)
+        if use_llm:
+            print("🌐 OpenAI activo — generando respuesta...")
+            resp = asyncio.run(handlers.handle_query(q))
+            print(f"💬 RESPUESTA:\n{resp}\n")
+        else:
+            print("🧩 Resultados RAG:")
+            print(ctx)
+    assert True

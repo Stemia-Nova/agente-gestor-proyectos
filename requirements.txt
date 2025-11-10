@@ -1,11 +1,9 @@
 # ==========================================================
 # Agente Gestor de Proyectos (RAG ClickUp + Chainlit)
-# Tested on Python 3.12–3.13
+# Versión optimizada (GPU o CPU)
 # ==========================================================
 
-# -----------------------------
-# 🔹 Core del Agente (Chat + LLM)
-# -----------------------------
+# 🔹 Núcleo LLM + interfaz
 chainlit==2.8.4
 python-dotenv==1.2.1
 requests==2.32.3
@@ -14,9 +12,7 @@ certifi==2025.10.5
 charset-normalizer==3.4.0
 idna==3.10
 
-# -----------------------------
-# 🔹 Desarrollo y calidad de código
-# -----------------------------
+# 🔹 Calidad y desarrollo
 black>=24.0.0
 pylint>=3.2.0
 mypy>=1.11.0
@@ -27,58 +23,45 @@ types-setuptools
 # 🔸 Módulo RAG híbrido (ClickUp → Limpieza → Indexación)
 # ==========================================================
 
-# -----------------------------
-# 🔹 Utilidades generales
-# -----------------------------
+# 🔹 Utilidades
 pandas==2.2.3
 numpy==1.26.4
 tqdm==4.66.5
 rich==13.9.2
 pyyaml>=6.0.2
 
-# -----------------------------
-# 🔹 Limpieza y segmentación de texto
-# -----------------------------
+# 🔹 Procesamiento y splitting de texto
 nltk==3.9.1
 langchain-text-splitters==0.3.6
 regex>=2024.5.15
 
-# -----------------------------
-# 🔹 Indexación y recuperación híbrida
-# -----------------------------
+# 🔹 Indexación y búsqueda híbrida
 chromadb==0.5.5
-faiss-cpu==1.8.0
 rank-bm25==0.2.2
 sentence-transformers==3.1.1
 scikit-learn==1.5.2
-opensearch-py==2.7.1
 
-# -----------------------------
-# 🔹 Modelos neuronales y re-ranking
-# -----------------------------
+# ==========================================================
+# 🔸 Modelos neuronales (Hugging Face)
+# ==========================================================
 transformers==4.45.2
-torch==2.4.0
-datasets==3.0.1
 accelerate>=0.33.0
 safetensors>=0.4.3
+bitsandbytes==0.43.3      # para 4bit/8bit sin CUDA SDK completo
+torch==2.4.0
+datasets>=3.0.1
 
-# -----------------------------
-# 🔹 API OpenAI y clientes LLM
-# -----------------------------
+# ==========================================================
+# 🔸 API OpenAI (opcional, para pruebas)
+# ==========================================================
 openai>=1.0.0,<2.0.0
 
 # ==========================================================
-# 🔸 API / Servidor (para despliegue opcional)
+# 🔸 API/Servidor y tests
 # ==========================================================
-fastapi>=0.116.1,<0.117.0      # compatible con Chainlit 2.8.4
+fastapi>=0.116.1,<0.117.0
 uvicorn[standard]>=0.35.0
 aiofiles>=23.2.1
-
-# ==========================================================
-# 🔸 Otros (formato, JSONL, testing, dev)
-# ==========================================================
-orjson>=3.10.0
-markdown-it-py>=3.0.0
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
 
