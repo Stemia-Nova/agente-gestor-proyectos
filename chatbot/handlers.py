@@ -1,56 +1,156 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-handlers.py — versión Pro
+handlers.py — versión Pro++ (conteos ampliados)
 ---------------------------------------------
-• Búsqueda híbrida avanzada
-• Detección simple de intención
+• Búsqueda híbrida avanzada (HybridSearch)
+• Detección de intención
+• Consultas analíticas: conteos por estado/bloqueo/prioridad/sprint
 • Contexto persistente
-• Sincronización ClickUp desde chat
+• Sincronización ClickUp desde el chat
 """
 
 import asyncio
 import traceback
 import re
 import importlib
-from typing import Any, Dict
+import unicodedata
+from typing import Any, Dict, Optional, Tuple
 
 from utils.hybrid_search import HybridSearch
 
-# Carga dinámica del módulo de sincronización
+# ==============================================================
+# 🔧 Carga dinámica del módulo de sincronización (opcional)
+# ==============================================================
 try:
     update_chroma_from_clickup = importlib.import_module("data.rag.sync.update_chroma_from_clickup")
 except Exception as e:
     update_chroma_from_clickup = None
     print(f"⚠️ No se pudo importar update_chroma_from_clickup: {e}")
 
+# ==============================================================
+# 🧠 Inicialización global
+# ==============================================================
 hybrid_search = HybridSearch()
-
-# Memoria de contexto (simple, por sesión)
-context_memory: Dict[str, Any] = {}
+context_memory: Dict[str, Any] = {}  # memoria simple por sesión
 
 
+# ========================= Utilidades =========================
+def _strip_accents(s: str) -> str:
+    """Quita tildes/diacríticos para matching robusto ('cuantos' ~ 'cuántos')."""
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+def _detect_intent(q_nf: str) -> str:
+    """Clasificación básica de intención por palabras clave (sin tildes)."""
+    if re.search(r"\bbloquead", q_nf):
+        return "bloqueadas"
+    if re.search(r"\bpendient|\ben\s+curso|\bprogreso", q_nf):
+        return "progreso"
+    if re.search(r"\bcompletad|\bcerrad|\bfinalizad|\bdone\b", q_nf):
+        return "completadas"
+    if re.search(r"\bsprint\b", q_nf):
+        return "sprint"
+    if re.search(r"\basignad|\bresponsable", q_nf):
+        return "responsables"
+    return "general"
+
+def _extract_sprint(q_nf: str) -> Optional[str]:
+    """Extrae 'Sprint X' si aparece 'sprint 1', 'del sprint 2', 'en sprint 3', etc."""
+    m = re.search(r"sprint\s*(\d+)", q_nf)
+    if m:
+        return f"Sprint {m.group(1)}"
+    return None
+
+def _parse_count_query(q_nf: str) -> Optional[Tuple[str, Dict[str, str]]]:
+    """
+    Detecta consultas de CONTEO y devuelve (accion, params)
+    Acciones posibles:
+      - count_sprints
+      - count_tasks
+      - count_tasks_blocked [sprint?]
+      - count_tasks_by_status [status, sprint?]
+      - count_tasks_by_priority [priority, sprint?]
+    """
+    # sprints / tareas totales
+    if re.search(r"\bcuant[ao]s?\s+sprints?\b", q_nf) or re.search(r"\bnumer[oa]\s+de\s+sprints?\b", q_nf):
+        return ("count_sprints", {})
+    if re.search(r"\bcuant[ao]s?\s+tareas?\b", q_nf) or re.search(r"\bnumer[oa]\s+de\s+tareas?\b", q_nf):
+        # solo “tareas” sin calificadores → total
+        if not re.search(r"\b(bloquead|urgent|urgentes?|alta|high|normal|low|baja|to[_ ]?do|in[_ ]?progress|en\s+curso|pendient|done|completad)", q_nf):
+            return ("count_tasks", {})
+
+    # sprint contextual (opcional)
+    sprint = _extract_sprint(q_nf)
+
+    # bloqueadas
+    if re.search(r"\bcuant[ao]s?\s+tareas?\s+bloquead", q_nf):
+        return ("count_tasks_blocked", {"sprint": sprint} if sprint else {})
+
+    # prioridad
+    if re.search(r"\bcuant[ao]s?\s+tareas?\s+urgentes?\b", q_nf) or re.search(r"\bprioridad\s+urgente\b", q_nf):
+        return ("count_tasks_by_priority", {"priority": "urgent", **({"sprint": sprint} if sprint else {})})
+    if re.search(r"\bprioridad\s+alta\b|\bhigh\b", q_nf):
+        return ("count_tasks_by_priority", {"priority": "high", **({"sprint": sprint} if sprint else {})})
+    if re.search(r"\bprioridad\s+normal\b", q_nf):
+        return ("count_tasks_by_priority", {"priority": "normal", **({"sprint": sprint} if sprint else {})})
+    if re.search(r"\bprioridad\s+baja\b|\blow\b", q_nf):
+        return ("count_tasks_by_priority", {"priority": "low", **({"sprint": sprint} if sprint else {})})
+
+    # estado
+    if re.search(r"\b(to[_ ]?do|pendient)\b", q_nf):
+        return ("count_tasks_by_status", {"status": "to_do", **({"sprint": sprint} if sprint else {})})
+    if re.search(r"\b(in[_ ]?progress|en\s+curso|progreso)\b", q_nf):
+        return ("count_tasks_by_status", {"status": "in_progress", **({"sprint": sprint} if sprint else {})})
+    if re.search(r"\b(done|completad|cerrad|finalizad)\b", q_nf):
+        return ("count_tasks_by_status", {"status": "done", **({"sprint": sprint} if sprint else {})})
+
+    return None
+
+
+# ========================= Handler principal =========================
 async def handle_query(query: str) -> str:
     """Procesa consultas naturales del usuario."""
     try:
-        q = query.lower().strip()
-        if not q:
+        q_raw = query.strip()
+        if not q_raw:
             return "Por favor, formula una pregunta relacionada con tareas, sprints o bloqueos."
 
-        # Intento de sincronización
-        if any(k in q for k in ["actualiza clickup", "sincroniza clickup", "refresca datos"]):
+        q = q_raw.lower()
+        q_nf = _strip_accents(q)  # versión sin tildes para regex robusto
+
+        # --- Sincronización manual con ClickUp ---
+        if any(k in q_nf for k in ["actualiza clickup", "sincroniza clickup", "refresca datos"]):
             return await _sync_clickup()
 
-        # Detección básica de intención
-        intent = _detect_intent(q)
+        # --- Ruteo de CONTEOS (ampliado) ---
+        count_parse = _parse_count_query(q_nf)
+        if count_parse:
+            accion, params = count_parse
+            from utils.helpers import (
+                count_sprints, count_tasks,
+                count_tasks_blocked, count_tasks_by_status, count_tasks_by_priority
+            )
+            if accion == "count_sprints":
+                return count_sprints()
+            if accion == "count_tasks":
+                return count_tasks()
+            if accion == "count_tasks_blocked":
+                return count_tasks_blocked(params.get("sprint"))
+            if accion == "count_tasks_by_status":
+                return count_tasks_by_status(params["status"], params.get("sprint"))
+            if accion == "count_tasks_by_priority":
+                return count_tasks_by_priority(params["priority"], params.get("sprint"))
 
-        # Búsqueda híbrida
-        result, metas = hybrid_search.search(q, top_k=6)
+        # --- Detección básica de intención (para vía semántica) ---
+        intent = _detect_intent(q_nf)
+
+        # --- Búsqueda híbrida (embeddings + rerank + intención) ---
+        result, metas = hybrid_search.search(q, top_k=6)  # usamos el texto original (con tildes) para semántica
         if not metas:
             return "No encontré resultados relevantes para esa consulta."
 
         response = _format_response(intent, result, metas)
-        context_memory["last_query"] = q
+        context_memory["last_query"] = q_raw
         context_memory["last_response"] = response
         return response
 
@@ -59,25 +159,9 @@ async def handle_query(query: str) -> str:
         return f"❌ Error procesando la consulta: {e}"
 
 
-def _detect_intent(q: str) -> str:
-    """Clasificación básica de intención por palabras clave."""
-    if re.search(r"bloquead", q):
-        return "bloqueadas"
-    if re.search(r"pendient|curso|progreso", q):
-        return "progreso"
-    if re.search(r"completad|cerrad|finalizad", q):
-        return "completadas"
-    if re.search(r"sprint", q):
-        return "sprint"
-    if re.search(r"asignad|responsable", q):
-        return "responsables"
-    return "general"
-
-
+# ========================= Formato de respuesta =========================
 def _format_response(intent: str, results: list[str], metas: list[dict[str, Any]]) -> str:
-    """Crea un formato elegante de respuesta estilo Scrum Master.
-    results: lista de textos recuperados (se acepta para compatibilidad con HybridSearch).
-    """
+    """Crea un formato elegante de respuesta estilo Scrum Master."""
     header = {
         "bloqueadas": "🚧 Tareas bloqueadas detectadas:",
         "progreso": "🏃‍♂️ Tareas en curso:",
@@ -103,13 +187,13 @@ def _format_response(intent: str, results: list[str], metas: list[dict[str, Any]
             f"Revisa '{first.get('name')}' — responsable: {first.get('assignees', 'sin asignar')}, prioridad: {first.get('priority', 'sin prioridad')}."
         )
     else:
-        # Fallback si no hay metadatos
         lines.append("\n💡 Recomendación:")
         lines.append("No hay recomendaciones disponibles.")
 
     return "\n".join(lines)
 
 
+# ========================= Sincronización ClickUp =========================
 async def _sync_clickup() -> str:
     """Ejecuta sincronización ClickUp desde el chatbot."""
     if not update_chroma_from_clickup:
@@ -124,9 +208,14 @@ async def _sync_clickup() -> str:
         return f"❌ Error durante la sincronización: {e}"
 
 
+# ========================= Modo prueba =========================
 if __name__ == "__main__":
     async def _test():
-        print(await handle_query("cuántas tareas hay en curso"))
+        print(await handle_query("cuantos sprints hay?"))
+        print(await handle_query("cuantas tareas hay?"))
+        print(await handle_query("cuantas tareas bloqueadas hay?"))
+        print(await handle_query("cuantas tareas urgentes hay en sprint 2?"))
+        print(await handle_query("cuantas tareas en progreso del sprint 1?"))
         print(await handle_query("actualiza ClickUp"))
 
     asyncio.run(_test())
