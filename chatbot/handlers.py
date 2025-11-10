@@ -74,8 +74,10 @@ def _detect_intent(q: str) -> str:
     return "general"
 
 
-def _format_response(intent: str, result: str, metas: list[dict[str, Any]]) -> str:
-    """Crea un formato elegante de respuesta estilo Scrum Master."""
+def _format_response(intent: str, results: list[str], metas: list[dict[str, Any]]) -> str:
+    """Crea un formato elegante de respuesta estilo Scrum Master.
+    results: lista de textos recuperados (se acepta para compatibilidad con HybridSearch).
+    """
     header = {
         "bloqueadas": "🚧 Tareas bloqueadas detectadas:",
         "progreso": "🏃‍♂️ Tareas en curso:",
@@ -94,11 +96,17 @@ def _format_response(intent: str, result: str, metas: list[dict[str, Any]]) -> s
         blocked = "🚫" if m.get("is_blocked") else ""
         lines.append(f"- {name} ({sprint}) — {status}, prioridad {prio} {blocked}")
 
-    first = metas[0]
-    lines.append("\n💡 Recomendación:")
-    lines.append(
-        f"Revisa '{first.get('name')}' — responsable: {first.get('assignees', 'sin asignar')}, prioridad: {first.get('priority', 'sin prioridad')}."
-    )
+    if metas:
+        first = metas[0]
+        lines.append("\n💡 Recomendación:")
+        lines.append(
+            f"Revisa '{first.get('name')}' — responsable: {first.get('assignees', 'sin asignar')}, prioridad: {first.get('priority', 'sin prioridad')}."
+        )
+    else:
+        # Fallback si no hay metadatos
+        lines.append("\n💡 Recomendación:")
+        lines.append("No hay recomendaciones disponibles.")
+
     return "\n".join(lines)
 
 
