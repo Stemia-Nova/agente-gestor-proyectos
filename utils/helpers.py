@@ -106,6 +106,15 @@ def _fetch_metadatas(limit: int = 1000) -> List[Dict[str, Any]]:
         return []
 
 
+def _get_with_where(where: Dict[str, Any], limit: int = 10000) -> List[Dict[str, Any]]:
+    """Devuelve metadatos filtrados con 'where' usando col.get (hasta 'limit')."""
+    col = _load_collection()
+    # Evita pasar una lista de strings a 'include' para no romper la comprobación de tipos;
+    # _extract_metadatas maneja de forma segura el resultado aunque no se especifique include.
+    res: Any = col.get(where=where, limit=limit)
+    return _extract_metadatas(res)
+
+
 def _sorted_strings(values: List[str]) -> List[str]:
     """Ordena de forma segura una lista de strings."""
     try:
@@ -149,11 +158,12 @@ def count_sprints() -> str:
     try:
         metadatas = _fetch_metadatas(limit=1000)
 
+        # Construye el set de sprints válidos de forma segura evitando llamadas a .strip() sobre None
         sprints_set = set()
         for m in metadatas:
-            sprint = m.get("sprint")
-            if isinstance(sprint, str) and sprint.strip() and sprint != "unknown":
-                sprints_set.add(sprint)
+            s = m.get("sprint")
+            if isinstance(s, str) and s.strip() and s != "unknown":
+                sprints_set.add(s)
 
         sprints: List[str] = [str(s) for s in sprints_set]
         if not sprints:
@@ -175,16 +185,24 @@ def count_tasks() -> str:
         return f"⚠️ Error al contar tareas: {e}"
 
 
+def count_tasks_in_sprint(sprint: str) -> str:
+    """Contar tareas (todas) en un sprint concreto."""
+    try:
+        metas = _get_with_where({"sprint": sprint})
+        return f"📆 Tareas en {sprint}: {len(metas)}."
+    except Exception as e:
+        return f"⚠️ Error al contar tareas en {sprint}: {e}"
+
+
 def count_tasks_blocked(sprint: Optional[str] = None) -> str:
     """Contar tareas bloqueadas (opcionalmente filtradas por sprint)."""
     try:
-        metas = _fetch_metadatas(limit=2000)
         if sprint:
-            metas = _filter_by_sprint(metas, sprint)
+            metas = _get_with_where({"sprint": sprint})
+        else:
+            metas = _fetch_metadatas(limit=2000)
         n = sum(1 for m in metas if bool(m.get("is_blocked")))
-        if sprint:
-            return f"🚧 Tareas bloqueadas en {sprint}: {n}."
-        return f"🚧 Tareas bloqueadas: {n}."
+        return f"🚧 Tareas bloqueadas{f' en {sprint}' if sprint else ''}: {n}."
     except Exception as e:
         return f"⚠️ Error al contar tareas bloqueadas: {e}"
 
@@ -193,13 +211,12 @@ def count_tasks_by_status(status: str, sprint: Optional[str] = None) -> str:
     """Contar tareas por estado (to_do, in_progress, done), opcionalmente por sprint."""
     try:
         target = _norm_status(status)
-        metas = _fetch_metadatas(limit=2000)
         if sprint:
-            metas = _filter_by_sprint(metas, sprint)
+            metas = _get_with_where({"sprint": sprint})
+        else:
+            metas = _fetch_metadatas(limit=2000)
         n = sum(1 for m in metas if _norm_status(m.get("status")) == target)
-        if sprint:
-            return f"📌 Tareas con estado {target} en {sprint}: {n}."
-        return f"📌 Tareas con estado {target}: {n}."
+        return f"📌 Tareas con estado {target}{f' en {sprint}' if sprint else ''}: {n}."
     except Exception as e:
         return f"⚠️ Error al contar tareas por estado: {e}"
 
@@ -208,12 +225,11 @@ def count_tasks_by_priority(priority: str, sprint: Optional[str] = None) -> str:
     """Contar tareas por prioridad (urgent, high, normal, low), opcionalmente por sprint."""
     try:
         target = _norm_priority(priority)
-        metas = _fetch_metadatas(limit=2000)
         if sprint:
-            metas = _filter_by_sprint(metas, sprint)
+            metas = _get_with_where({"sprint": sprint})
+        else:
+            metas = _fetch_metadatas(limit=2000)
         n = sum(1 for m in metas if _norm_priority(m.get("priority")) == target)
-        if sprint:
-            return f"⭐ Tareas con prioridad {target} en {sprint}: {n}."
-        return f"⭐ Tareas con prioridad {target}: {n}."
+        return f"⭐ Tareas con prioridad {target}{f' en {sprint}' if sprint else ''}: {n}."
     except Exception as e:
         return f"⚠️ Error al contar tareas por prioridad: {e}"

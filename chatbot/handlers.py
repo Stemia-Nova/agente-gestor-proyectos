@@ -64,23 +64,27 @@ def _extract_sprint(q_nf: str) -> Optional[str]:
 def _parse_count_query(q_nf: str) -> Optional[Tuple[str, Dict[str, str]]]:
     """
     Detecta consultas de CONTEO y devuelve (accion, params)
-    Acciones posibles:
       - count_sprints
       - count_tasks
+      - count_tasks_in_sprint [sprint]
       - count_tasks_blocked [sprint?]
       - count_tasks_by_status [status, sprint?]
       - count_tasks_by_priority [priority, sprint?]
     """
-    # sprints / tareas totales
+    # sprints
     if re.search(r"\bcuant[ao]s?\s+sprints?\b", q_nf) or re.search(r"\bnumer[oa]\s+de\s+sprints?\b", q_nf):
         return ("count_sprints", {})
-    if re.search(r"\bcuant[ao]s?\s+tareas?\b", q_nf) or re.search(r"\bnumer[oa]\s+de\s+tareas?\b", q_nf):
-        # solo “tareas” sin calificadores → total
-        if not re.search(r"\b(bloquead|urgent|urgentes?|alta|high|normal|low|baja|to[_ ]?do|in[_ ]?progress|en\s+curso|pendient|done|completad)", q_nf):
-            return ("count_tasks", {})
 
-    # sprint contextual (opcional)
+    # sprint contextual detectado (opcional)
     sprint = _extract_sprint(q_nf)
+
+    # tareas totales (solo si NO hay calificadores)
+    # incluye 'progreso' como calificador para NO caer aquí por error
+    if re.search(r"\bcuant[ao]s?\s+tareas?\b", q_nf) or re.search(r"\bnumer[oa]\s+de\s+tareas?\b", q_nf):
+        if not re.search(r"\b(bloquead|urgent|urgentes?|alta|high|normal|low|baja|to[_ ]?do|in[_ ]?progress|en\s+curso|progreso|pendient|done|completad)\b", q_nf):
+            if sprint:
+                return ("count_tasks_in_sprint", {"sprint": sprint})
+            return ("count_tasks", {})
 
     # bloqueadas
     if re.search(r"\bcuant[ao]s?\s+tareas?\s+bloquead", q_nf):
@@ -128,12 +132,15 @@ async def handle_query(query: str) -> str:
             accion, params = count_parse
             from utils.helpers import (
                 count_sprints, count_tasks,
-                count_tasks_blocked, count_tasks_by_status, count_tasks_by_priority
+                count_tasks_in_sprint, count_tasks_blocked,
+                count_tasks_by_status, count_tasks_by_priority
             )
             if accion == "count_sprints":
                 return count_sprints()
             if accion == "count_tasks":
                 return count_tasks()
+            if accion == "count_tasks_in_sprint":
+                return count_tasks_in_sprint(params["sprint"])
             if accion == "count_tasks_blocked":
                 return count_tasks_blocked(params.get("sprint"))
             if accion == "count_tasks_by_status":
@@ -216,6 +223,7 @@ if __name__ == "__main__":
         print(await handle_query("cuantas tareas bloqueadas hay?"))
         print(await handle_query("cuantas tareas urgentes hay en sprint 2?"))
         print(await handle_query("cuantas tareas en progreso del sprint 1?"))
+        print(await handle_query("cuantas tareas tiene el sprint 3?"))
         print(await handle_query("actualiza ClickUp"))
 
     asyncio.run(_test())
