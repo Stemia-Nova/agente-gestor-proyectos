@@ -1,195 +1,155 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Compara lo almacenado en Chroma (metadatos) con el JSON RAW de ClickUp.
-- Muestra diferencias por task_id en: sprint, project, status, priority, assignees, tags, due_date.
-- Útil para auditar qué se perdió/normalizó mal en el pipeline.
-
-Requisitos:
-- RAW guardado en: data/rag/ingest/clickup_tasks_all_*.json  (ajusta abajo si tu ruta es otra)
-- Colección Chroma: clickup_tasks en data/rag/chroma_db
+compare_clickup_vs_chroma.py — Verifica la sincronización entre ClickUp limpio y ChromaDB
+----------------------------------------------------------------------------------------
+✔ Carga la base de datos local ChromaDB (colección clickup_tasks)
+✔ Compara con el archivo limpio `data/processed/task_clean.json`
+✔ Detecta diferencias de IDs y muestra resumen
 """
 
-from pathlib import Path
+import os
 import json
-import glob
-from collections import defaultdict
+from pathlib import Path
+from typing import Any, cast
+from collections import Counter
 
 import chromadb
-from typing import Any, cast
+from chromadb.config import Settings
 
-RAW_GLOB = "data/rag/ingest/clickup_tasks_all_*.json"   # ajusta si tu RAW está en otra ruta
-CHROMA_PATH = "data/rag/chroma_db"
-COLLECTION = "clickup_tasks"
+# ======================================================
+# 📁 CONFIGURACIÓN DE RUTAS
+# ======================================================
 
-# ---------- Normalizadores básicos ----------
-def norm_status(raw_status: str) -> str:
-    s = (raw_status or "").strip().lower()
-    mapping = {
-        "to do": "to_do", "todo": "to_do", "to-do": "to_do",
-        "in progress": "in_progress", "in_progress": "in_progress",
-        "complete": "done", "completed": "done", "closed": "done", "done": "done",
-    }
-    return mapping.get(s, s or "unknown")
+ROOT = Path(__file__).resolve().parents[1]
+PROCESSED_PATH = ROOT / "data" / "processed" / "task_clean.json"
+CHROMA_PATH = ROOT / "data" / "rag" / "chroma_db"
+COLLECTION_NAME = "clickup_tasks"
 
-def norm_priority(raw_pri) -> str:
-    # ClickUp raw puede ser objeto {"priority": "urgent"} o None
-    if isinstance(raw_pri, dict):
-        p = raw_pri.get("priority")
-    else:
-        p = raw_pri
-    p = (p or "").strip().lower()
-    mp = {"urgente": "urgent", "urgent": "urgent", "alta": "high", "high": "high",
-          "normal": "normal", "baja": "low", "low": "low"}
-    return mp.get(p, p or "unknown")
+# ======================================================
+# 🔍 FUNCIONES AUXILIARES
+# ======================================================
 
-def ms_to_date(ms_str):
-    # Devuelve YYYY-MM-DD o "unknown"
-    try:
-        if not ms_str:
-            return "unknown"
-        ms = int(ms_str)
-        from datetime import datetime, timezone
-        return datetime.fromtimestamp(ms/1000, tz=timezone.utc).date().isoformat()
-    except Exception:
-        return "unknown"
+def load_clickup_tasks() -> list[dict[str, Any]]:
+    """Carga las tareas limpias desde el archivo JSON procesado."""
+    if not PROCESSED_PATH.exists():
+        raise FileNotFoundError(f"No se encontró {PROCESSED_PATH}")
+    data = json.loads(PROCESSED_PATH.read_text(encoding="utf-8"))
+    print(f"📥 {len(data)} tareas cargadas desde {PROCESSED_PATH.name}")
+    return data
 
-def list_names_assignees(arr):
-    if not arr:
-        return []
-    names = []
-    for a in arr:
-        n = a.get("username") or a.get("name") or a.get("email")
-        if n:
-            names.append(n)
-    return names
 
-def list_tag_names(arr):
-    if not arr:
-        return []
-    return [t.get("name") for t in arr if isinstance(t, dict) and t.get("name")]
+def load_chroma_metas(limit: int | None = None, batch_size: int = 1000) -> dict[str, list[Any]]:
+    """Carga los metadatos de la colección Chroma."""
+    if not CHROMA_PATH.exists():
+        raise FileNotFoundError(f"No se encontró la carpeta de Chroma en {CHROMA_PATH}")
 
-# ---------- Carga RAW (ClickUp) ----------
-def load_raw_tasks() -> dict:
-    # Junta todos los archivos raw si hay varios
-    raw_files = sorted(glob.glob(RAW_GLOB))
-    data_by_id = {}
-    for rf in raw_files:
-        try:
-            obj = json.loads(Path(rf).read_text(encoding="utf-8"))
-            for t in obj.get("tasks", []):
-                data_by_id[t["id"]] = t
-        except Exception as e:
-            print(f"⚠️ No pude leer {rf}: {e}")
-    return data_by_id
+    print(f"🧠 Cargando colección '{COLLECTION_NAME}' desde {CHROMA_PATH} ...")
+    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
 
-def load_chroma_metas(limit=100000):
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-    col = client.get_collection(COLLECTION)
-    res = col.get(include=cast(Any, ["ids","metadatas"]), limit=limit)
-    ids = res.get("ids", []) or []
-    metas = res.get("metadatas", []) or []
-    # los metadatos en tu pipeline guardan "task_id" por chunk; cogemos el primero visto para cada task_id
-    by_task = {}
-    for _id, m in zip(ids, metas):
-        if not isinstance(m, dict):
-            continue
-        tid = m.get("task_id")
-        if not tid:
-            # en caso de chunk sin task_id, ignora
-            continue
-        if tid not in by_task:
-            by_task[tid] = m
-    return by_task
-    return by_task
+    # listar colecciones disponibles
+    collections = [c.name for c in client.list_collections()]
+    if COLLECTION_NAME not in collections:
+        raise ValueError(f"La colección '{COLLECTION_NAME}' no existe. Encontradas: {collections}")
 
-# ---------- Comparación ----------
-FIELDS = ["sprint", "project", "status", "priority", "assignees", "tags", "due_date", "name"]
+    col = client.get_collection(name=COLLECTION_NAME)
 
-def extract_expected_from_raw(rt: dict) -> dict:
+    include = cast(Any, ["metadatas"])
+    all_ids, all_metas = [], []
+    fetched = 0
+
+    while True:
+        res = col.get(include=include, limit=batch_size, offset=fetched)
+        ids = res.get("ids", []) or []
+        metas = res.get("metadatas")
+        # Ensure metas is a non-None iterable before extending
+        if metas is None:
+            metas = []
+        elif not isinstance(metas, list):
+            metas = list(metas)
+
+        if not ids:
+            break
+
+        all_ids.extend(ids)
+        all_metas.extend(metas)
+        fetched += len(ids)
+
+        if limit is not None and fetched >= limit:
+            break
+
+    print(f"📚 Recuperados {len(all_ids)} documentos de Chroma.")
+    return {"ids": all_ids, "metadatas": all_metas}
+
+
+def extract_task_ids_from_metas(metas: list[dict[str, Any]]) -> set[str]:
+    """Extrae los task_id de los metadatos."""
+    ids = set()
+    for m in metas:
+        tid = m.get("task_id") or m.get("id") or m.get("uuid")
+        if tid:
+            ids.add(str(tid))
+    return ids
+
+
+def compare_sets(clickup_ids: set[str], chroma_ids: set[str]) -> dict[str, set[str]]:
+    """Compara los IDs entre ClickUp limpio y Chroma."""
     return {
-        "task_id": rt.get("id"),
-        "name": rt.get("name") or "",
-        "sprint": rt.get("sprint_name") or "unknown",
-        "project": (rt.get("project") or {}).get("name") or "unknown",
-        "status": norm_status((rt.get("status") or {}).get("status", "")),
-        "priority": norm_priority(rt.get("priority")),
-        "assignees": list_names_assignees(rt.get("assignees")),
-        "tags": list_tag_names(rt.get("tags")),
-        "due_date": ms_to_date(rt.get("due_date")),
+        "missing_in_chroma": clickup_ids - chroma_ids,
+        "missing_in_clickup": chroma_ids - clickup_ids,
+        "both": clickup_ids & chroma_ids
     }
 
-def normalize_meta_for_compare(m: dict) -> dict:
-    # en tu Chroma aparecen a veces strings "[]" → conviértelo a lista
-    def as_list(x):
-        if isinstance(x, list):
-            return x
-        if isinstance(x, str):
-            s = x.strip()
-            if s == "[]":
-                return []
-            # si viene como string con comas, intenta partir
-            if s.startswith("[") and s.endswith("]"):
-                # intento suave
-                try:
-                    import ast
-                    v = ast.literal_eval(s)
-                    if isinstance(v, list):
-                        return v
-                except Exception:
-                    pass
-            return [s] if s else []
-        return []
 
-    return {
-        "task_id": m.get("task_id"),
-        "name": m.get("name") or "",
-        "sprint": m.get("sprint") or "unknown",
-        "project": m.get("project") or "unknown",
-        "status": (m.get("status") or "unknown").lower(),
-        "priority": (m.get("priority") or "unknown").lower(),
-        "assignees": as_list(m.get("assignees")),
-        "tags": as_list(m.get("tags")),
-        "due_date": m.get("due_date") or "unknown",
-    }
+def summarize_chroma_fields(metas: list[dict[str, Any]]):
+    """Imprime resumen de campos en Chroma."""
+    field_counter = Counter()
+    for m in metas:
+        field_counter.update(m.keys())
+    print("\n🧩 Campos más comunes en metadatos:")
+    for k, v in field_counter.most_common(10):
+        print(f"   • {k}: {v}")
+
+
+# ======================================================
+# 🚀 EJECUCIÓN PRINCIPAL
+# ======================================================
 
 def main():
-    raw = load_raw_tasks()
+    print("🔍 Comparando datos de ClickUp vs Chroma...\n")
+
+    clickup = load_clickup_tasks()
+    clickup_ids = {str(t.get("task_id")) for t in clickup if t.get("task_id")}
+    print(f"📊 {len(clickup_ids)} IDs únicos en ClickUp limpio.")
+
     chroma = load_chroma_metas()
+    chroma_ids = extract_task_ids_from_metas(chroma["metadatas"])
+    print(f"📊 {len(chroma_ids)} IDs únicos en Chroma.")
 
-    missing_in_chroma = []
-    diff_by_field = defaultdict(list)
+    diff = compare_sets(clickup_ids, chroma_ids)
 
-    for tid, rt in raw.items():
-        exp = extract_expected_from_raw(rt)
-        meta = chroma.get(tid)
-        if not meta:
-            missing_in_chroma.append(tid)
-            continue
-        got = normalize_meta_for_compare(meta)
+    print("\n📈 RESULTADOS DE COMPARACIÓN")
+    print(f"   ✅ Coinciden: {len(diff['both'])}")
+    print(f"   ⚠️ En ClickUp pero no en Chroma: {len(diff['missing_in_chroma'])}")
+    print(f"   ⚠️ En Chroma pero no en ClickUp: {len(diff['missing_in_clickup'])}")
 
-        for f in FIELDS:
-            if got[f] != exp[f]:
-                diff_by_field[f].append({
-                    "task_id": tid,
-                    "expected": exp[f],
-                    "got": got[f],
-                    "name": exp["name"]
-                })
+    if diff["missing_in_chroma"]:
+        print("\n❌ Faltan en Chroma:")
+        for tid in list(diff["missing_in_chroma"])[:5]:
+            print(f"   - {tid}")
+        if len(diff["missing_in_chroma"]) > 5:
+            print("   ...")
 
-    print("\n=== RESUMEN ===")
-    print(f"RAW tasks: {len(raw)} | Chroma tasks (con task_id único): {len(chroma)}")
-    print(f"Tareas RAW sin metadatos en Chroma: {len(missing_in_chroma)}")
-    if missing_in_chroma:
-        print("  ->", ", ".join(missing_in_chroma[:10]), ("..." if len(missing_in_chroma)>10 else ""))
+    if diff["missing_in_clickup"]:
+        print("\n⚠️ Existen en Chroma pero no en ClickUp:")
+        for tid in list(diff["missing_in_clickup"])[:5]:
+            print(f"   - {tid}")
+        if len(diff["missing_in_clickup"]) > 5:
+            print("   ...")
 
-    for f in FIELDS:
-        lst = diff_by_field.get(f, [])
-        print(f"\n- Diferencias en '{f}': {len(lst)}")
-        for d in lst[:8]:
-            print(f"  · {d['task_id']} ({d['name']}) | esper: {d['expected']} | got: {d['got']}")
-        if len(lst) > 8:
-            print(f"  ... (+{len(lst)-8} más)")
+    summarize_chroma_fields(chroma["metadatas"])
+    print("\n🏁 Comparación finalizada correctamente.")
+
 
 if __name__ == "__main__":
     main()
