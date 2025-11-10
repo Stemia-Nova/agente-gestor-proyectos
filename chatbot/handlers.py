@@ -1,197 +1,124 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-chatbot/handlers.py
--------------------
-Versión refinada para integración con `chatbot/prompts.py`.
-
-✔ Integra HybridSearch (RAG)
-✔ Usa prompts especializados (Scrum/Agile)
-✔ Genera respuestas naturales o JSON según el tipo de consulta
-✔ Incluye memoria conversacional, comandos y debug
-✔ Compatible con Chainlit 2.8.x y `main.py` clásico
+handlers.py — versión Pro
+---------------------------------------------
+• Búsqueda híbrida avanzada
+• Detección simple de intención
+• Contexto persistente
+• Sincronización ClickUp desde chat
 """
 
-import os
 import asyncio
-import time
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+import traceback
+import re
+import importlib
+from typing import Any, Dict
 
-from dotenv import load_dotenv
-from openai import OpenAI
 from utils.hybrid_search import HybridSearch
-from chatbot import prompts  # importamos tu prompts.py
 
-# ======================================================
-# ⚙️ CARGA DE ENTORNO
-# ======================================================
-load_dotenv()
-
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-REQUEST_TIMEOUT = float(os.getenv("OPENAI_REQUEST_TIMEOUT", 60))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
+# Carga dinámica del módulo de sincronización
 try:
-    client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+    update_chroma_from_clickup = importlib.import_module("data.rag.sync.update_chroma_from_clickup")
 except Exception as e:
-    print(f"⚠️ No se pudo inicializar OpenAI: {e}")
-    client = None
+    update_chroma_from_clickup = None
+    print(f"⚠️ No se pudo importar update_chroma_from_clickup: {e}")
 
-# Instanciar HybridSearch (sin parámetros, según tu clase actual)
 hybrid_search = HybridSearch()
 
-# ======================================================
-# 💾 MEMORIA CONVERSACIONAL
-# ======================================================
-_conversation_history: List[Dict[str, str]] = []
+# Memoria de contexto (simple, por sesión)
+context_memory: Dict[str, Any] = {}
 
-
-def _log_conversation(q: str, r: str) -> None:
-    """Guarda en memoria las últimas interacciones."""
-    _conversation_history.append(
-        {"timestamp": datetime.now().isoformat(timespec="seconds"), "question": q, "answer": r}
-    )
-    if len(_conversation_history) > 5:
-        _conversation_history.pop(0)
-
-
-def reset_memory() -> str:
-    _conversation_history.clear()
-    return "🧹 Memoria conversacional reiniciada."
-
-
-# ======================================================
-# 🧮 UTILIDADES DE FORMATEO
-# ======================================================
-
-def summarize_context(meta: List[Dict[str, Any]]) -> str:
-    """Crea un resumen textual de las tareas recuperadas."""
-    if not meta:
-        return "(sin contexto)"
-    resumen = []
-    for m in meta[:5]:
-        resumen.append(
-            f"- {m.get('name','Tarea sin nombre')} "
-            f"(Sprint {m.get('sprint','?')}) — "
-            f"{m.get('status','?')}, "
-            f"{m.get('assignees','Sin asignar')}, "
-            f"prioridad: {m.get('priority','Sin prioridad')}."
-        )
-    return "\n".join(resumen)
-
-
-# ======================================================
-# 🧠 GENERACIÓN CON OPENAI
-# ======================================================
-
-async def _synthesize_openai(question: str, context: str) -> str:
-    """Genera respuesta contextual con OpenAI o fallback."""
-    context = str(context or "")
-    if not client:
-        return prompts.DEFAULT_ECHO_PREFIX + " " + context if context.strip() else prompts.RAG_NO_RESULTS
-
-    # Construimos prompt contextual
-    user_prompt = prompts.RAG_CONTEXT_PROMPT.format(
-        system=prompts.SYSTEM_INSTRUCTIONS,
-        context=context,
-        question=question,
-    )
-
-    # Intentamos hasta 3 veces (por rate limit)
-    for attempt in range(3):
-        try:
-            completion = await asyncio.to_thread(
-                lambda: client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {"role": "system", "content": prompts.SYSTEM_INSTRUCTIONS},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.25,
-                    max_tokens=450,
-                    timeout=REQUEST_TIMEOUT,
-                )
-            )
-            return completion.choices[0].message.content.strip()
-        except Exception as e:
-            if "429" in str(e):
-                delay = (attempt + 1) * 2
-                print(f"⚠️ Rate limit alcanzado. Reintentando en {delay}s...")
-                time.sleep(delay)
-                continue
-            print(f"⚠️ Error con OpenAI: {e}")
-            break
-
-    # Fallback textual
-    return (
-        "Respuesta basada en el contexto:\n" + context
-        if context.strip()
-        else prompts.RAG_NO_RESULTS
-    )
-
-
-# ======================================================
-# 💬 MANEJADOR PRINCIPAL
-# ======================================================
 
 async def handle_query(query: str) -> str:
-    """Maneja consultas del usuario con RAG, prompts y memoria."""
-    q = (query or "").strip()
-    if not q:
-        return "Por favor, escribe una pregunta."
-
-    # --- Comandos ---
-    if q.lower() in {"/ayuda", "ayuda"}:
-        return (
-            "📘 Comandos disponibles:\n"
-            "• /contexto → muestra las últimas interacciones.\n"
-            "• /reset → borra la memoria conversacional.\n"
-            "• /debug → muestra el último prompt enviado al modelo.\n"
-            "• /ayuda → muestra esta lista.\n"
-        )
-
-    if q.lower() in {"/reset", "reset"}:
-        return reset_memory()
-
-    if q.lower() in {"/contexto", "contexto"}:
-        if not _conversation_history:
-            return "🧠 Memoria vacía."
-        texto = "\n\n".join(
-            f"[{x['timestamp']}] Q: {x['question']}\nA: {x['answer']}"
-            for x in _conversation_history
-        )
-        return f"🧠 Memoria reciente:\n{texto}"
-
-    # --- Búsqueda híbrida ---
+    """Procesa consultas naturales del usuario."""
     try:
-        results, metas = hybrid_search.search(q, top_k=5)  # type: ignore[attr-defined]
+        q = query.lower().strip()
+        if not q:
+            return "Por favor, formula una pregunta relacionada con tareas, sprints o bloqueos."
+
+        # Intento de sincronización
+        if any(k in q for k in ["actualiza clickup", "sincroniza clickup", "refresca datos"]):
+            return await _sync_clickup()
+
+        # Detección básica de intención
+        intent = _detect_intent(q)
+
+        # Búsqueda híbrida
+        result, metas = hybrid_search.search(q, top_k=6)
+        if not metas:
+            return "No encontré resultados relevantes para esa consulta."
+
+        response = _format_response(intent, result, metas)
+        context_memory["last_query"] = q
+        context_memory["last_response"] = response
+        return response
+
     except Exception as e:
-        r = f"⚠️ Error en la búsqueda: {e}"
-        _log_conversation(q, r)
-        return r
-
-    if not results:
-        r = prompts.RAG_NO_RESULTS
-        _log_conversation(q, r)
-        return r
-
-    # --- Preparar contexto y generar respuesta ---
-    context_text = summarize_context(metas)
-    answer = await _synthesize_openai(q, context_text)
-
-    # --- Guardar en memoria y devolver ---
-    _log_conversation(q, answer)
-    return answer
+        traceback.print_exc()
+        return f"❌ Error procesando la consulta: {e}"
 
 
-# ======================================================
-# 🧩 DEBUG LOCAL
-# ======================================================
+def _detect_intent(q: str) -> str:
+    """Clasificación básica de intención por palabras clave."""
+    if re.search(r"bloquead", q):
+        return "bloqueadas"
+    if re.search(r"pendient|curso|progreso", q):
+        return "progreso"
+    if re.search(r"completad|cerrad|finalizad", q):
+        return "completadas"
+    if re.search(r"sprint", q):
+        return "sprint"
+    if re.search(r"asignad|responsable", q):
+        return "responsables"
+    return "general"
+
+
+def _format_response(intent: str, result: str, metas: list[dict[str, Any]]) -> str:
+    """Crea un formato elegante de respuesta estilo Scrum Master."""
+    header = {
+        "bloqueadas": "🚧 Tareas bloqueadas detectadas:",
+        "progreso": "🏃‍♂️ Tareas en curso:",
+        "completadas": "✅ Tareas completadas:",
+        "sprint": "📆 Información de sprint:",
+        "responsables": "👥 Asignaciones:",
+        "general": "📋 Información general:"
+    }.get(intent, "📋 Información:")
+
+    lines = [header]
+    for m in metas[:5]:
+        name = m.get("name", "sin nombre")
+        sprint = m.get("sprint", "sin sprint")
+        prio = m.get("priority", "sin prioridad")
+        status = m.get("status", "sin estado")
+        blocked = "🚫" if m.get("is_blocked") else ""
+        lines.append(f"- {name} ({sprint}) — {status}, prioridad {prio} {blocked}")
+
+    first = metas[0]
+    lines.append("\n💡 Recomendación:")
+    lines.append(
+        f"Revisa '{first.get('name')}' — responsable: {first.get('assignees', 'sin asignar')}, prioridad: {first.get('priority', 'sin prioridad')}."
+    )
+    return "\n".join(lines)
+
+
+async def _sync_clickup() -> str:
+    """Ejecuta sincronización ClickUp desde el chatbot."""
+    if not update_chroma_from_clickup:
+        return "⚠️ No se pudo cargar el módulo de sincronización."
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, update_chroma_from_clickup.main)
+        return "✅ Sincronización completada correctamente desde ClickUp."
+    except Exception as e:
+        traceback.print_exc()
+        return f"❌ Error durante la sincronización: {e}"
+
 
 if __name__ == "__main__":
-    import asyncio
+    async def _test():
+        print(await handle_query("cuántas tareas hay en curso"))
+        print(await handle_query("actualiza ClickUp"))
 
-    print("🤖 Prueba manual del handler con prompts ágiles")
-    res = asyncio.run(handle_query("¿Qué tareas están bloqueadas?"))
-    print(res)
+    asyncio.run(_test())

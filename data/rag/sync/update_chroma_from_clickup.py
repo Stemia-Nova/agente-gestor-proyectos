@@ -1,209 +1,174 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-update_chroma_from_clickup.py (versión profesional e incremental)
------------------------------------------------------------------
-Sincroniza la colección 'clickup_tasks' de ChromaDB con los nuevos
-chunks generados desde ClickUp (task_chunks.jsonl).
-
-✔ Inserta solo nuevos o modificados (comparando chunk_hash)
-✔ Mantiene sprints cerrados como solo lectura
-✔ Actualiza index_registry.json con metadatos y recuentos
-✔ Compatible con embeddings MiniLM + Jina y ChromaDB ≥0.4.x
+update_chroma_from_clickup.py — versión Pro
+-------------------------------------------
+Sincroniza ClickUp → Chroma con:
+• Detección dinámica del sprint actual
+• Limpieza incremental de tareas
+• Tipado compatible con Pylance
 """
 
-from __future__ import annotations
+import os
 import json
-import importlib
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Any, Optional, cast
-from tqdm import tqdm
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Mapping, cast
+import requests
 import chromadb
+from dotenv import load_dotenv
 
-
-# =============================================================
-# 📂 Configuración
-# =============================================================
-CHUNKS_PATH = Path("data/processed/task_chunks.jsonl")
-CHROMA_PATH = Path("data/rag/chroma_db")
-REGISTRY_PATH = CHROMA_PATH / "index_registry.json"
+# ======================================================
+# Configuración base
+# ======================================================
+load_dotenv()
+CLICKUP_API_TOKEN = os.getenv("CLICKUP_API_TOKEN")
+CLICKUP_FOLDER_ID = os.getenv("CLICKUP_FOLDER_ID")
+CHROMA_PATH = "data/rag/chroma_db"
 COLLECTION_NAME = "clickup_tasks"
 
+if not CLICKUP_API_TOKEN or not CLICKUP_FOLDER_ID:
+    raise RuntimeError("❌ Falta CLICKUP_API_TOKEN o CLICKUP_FOLDER_ID en el entorno (.env).")
 
-# =============================================================
-# 🧰 Funciones utilitarias
-# =============================================================
-def load_registry() -> Dict[str, Any]:
-    if REGISTRY_PATH.exists():
-        try:
-            return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-def save_registry(registry: Dict[str, Any]) -> None:
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REGISTRY_PATH.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
-
-def load_chunks() -> List[Dict[str, Any]]:
-    if not CHUNKS_PATH.exists():
-        print(f"⚠️ No existe el archivo {CHUNKS_PATH}")
-        return []
-    rows = []
-    with CHUNKS_PATH.open("r", encoding="utf-8") as f:
-        for ln in f:
-            try:
-                rows.append(json.loads(ln))
-            except Exception:
-                continue
-    print(f"📦 Chunks cargados: {len(rows)}")
-    return rows
+HEADERS = {"Authorization": CLICKUP_API_TOKEN}
 
 
-# =============================================================
-# 🧠 Embeddings
-# =============================================================
-def load_embedding_functions() -> Dict[str, Any]:
-    """Carga los embeddings híbridos MiniLM + Jina."""
-    mod = importlib.import_module("chromadb.utils.embedding_functions")
-    SentenceTF = getattr(mod, "SentenceTransformerEmbeddingFunction")
-    embed_fns = {
-        "semantic": SentenceTF(model_name="sentence-transformers/all-MiniLM-L12-v2")
+# ======================================================
+# Utilidades
+# ======================================================
+def ts_to_dt(ts: str | int | None):
+    """Convierte timestamp (ms) a datetime UTC."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def detect_sprint_status(list_obj: Dict[str, Any]) -> str:
+    """Determina si un sprint está activo, cerrado o futuro."""
+    now = datetime.now(timezone.utc)
+    start_dt = ts_to_dt(list_obj.get("start_date"))
+    due_dt = ts_to_dt(list_obj.get("due_date"))
+    if start_dt and due_dt and start_dt <= now <= due_dt:
+        return "actual"
+    elif due_dt and now > due_dt:
+        return "cerrado"
+    elif start_dt and now < start_dt:
+        return "futuro"
+    return "sin fecha"
+
+
+def get_lists_from_folder(folder_id: str) -> List[Dict[str, Any]]:
+    """Obtiene listas (sprints) de un folder ClickUp."""
+    url = f"https://api.clickup.com/api/v2/folder/{folder_id}/list"
+    res = requests.get(url, headers=HEADERS)
+    res.raise_for_status()
+    return res.json().get("lists", [])
+
+
+def get_tasks_from_list(list_id: str) -> List[Dict[str, Any]]:
+    """Obtiene todas las tareas de una lista."""
+    all_tasks: List[Dict[str, Any]] = []
+    page = 0
+    while True:
+        params = {"page": page, "subtasks": "true", "archived": "true"}
+        url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+        res = requests.get(url, headers=HEADERS, params=params)
+        res.raise_for_status()
+        data = res.json()
+        tasks = data.get("tasks", [])
+        if not tasks:
+            break
+        all_tasks.extend(tasks)
+        if len(tasks) < 100:
+            break
+        page += 1
+    return all_tasks
+
+
+def clean_task(task: Dict[str, Any], sprint_name: str, sprint_status: str) -> Dict[str, Any]:
+    """Convierte una tarea ClickUp en formato limpio para indexar."""
+    return {
+        "id": task.get("id"),
+        "name": task.get("name", "Tarea sin nombre"),
+        "status": (task.get("status") or {}).get("status", "sin estado").lower(),
+        "priority": (task.get("priority") or {}).get("priority", "sin prioridad").lower()
+        if task.get("priority") else "sin prioridad",
+        "assignees": ", ".join([a.get("username", "desconocido") for a in task.get("assignees", [])]) or "sin asignar",
+        "is_blocked": any("bloquead" in tag.get("name", "").lower() for tag in task.get("tags", [])),
+        "sprint": sprint_name,
+        "sprint_status": sprint_status,
+        "url": f"https://app.clickup.com/t/{task.get('id')}",
+        "last_update": task.get("date_updated"),
+        "active": sprint_status == "actual",
     }
 
-    try:
-        JinaEF = getattr(mod, "JinaEmbeddingFunction", None)
-        if JinaEF:
-            embed_fns["dense"] = JinaEF(api_key=None)
-            print("🧠 Embeddings híbridos: MiniLM + Jina")
-        else:
-            print("🧠 Solo MiniLM (Jina no disponible)")
-    except Exception:
-        print("🧠 Solo MiniLM (Jina no disponible)")
-    return embed_fns
 
+# ======================================================
+# Ejecución principal
+# ======================================================
+def main() -> None:
+    print(f"📁 Archivo .env cargado desde: {os.getcwd()}/.env")
+    print(f"🔍 CLICKUP_API_TOKEN detectado: {bool(CLICKUP_API_TOKEN)}")
+    print(f"🔍 CLICKUP_FOLDER_ID detectado: {CLICKUP_FOLDER_ID}")
 
-# =============================================================
-# 🚀 Sincronización incremental
-# =============================================================
-def main(reset: bool = False) -> None:
-    chunks = load_chunks()
-    if not chunks:
-        print("⚠️ No hay chunks para sincronizar.")
+    # Aseguramos al analizador de tipos que CLICKUP_FOLDER_ID no es None en tiempo de ejecución
+    assert CLICKUP_FOLDER_ID is not None, "CLICKUP_FOLDER_ID is required by update_chroma_from_clickup.main"
+
+    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = client.get_or_create_collection(COLLECTION_NAME)
+
+    all_cleaned: List[Dict[str, Any]] = []
+    lists = get_lists_from_folder(CLICKUP_FOLDER_ID)
+    print(f"📂 {len(lists)} listas encontradas en el folder.")
+
+    for l in lists:
+        sprint_name = l.get("name", "Sprint sin nombre")
+        sprint_status = detect_sprint_status(l)
+        print(f"📋 {sprint_name}: {sprint_status.upper()}")
+
+        tasks = get_tasks_from_list(l["id"])
+        print(f"   ↳ {len(tasks)} tareas encontradas.")
+
+        for t in tasks:
+            clean = clean_task(t, sprint_name, sprint_status)
+            all_cleaned.append(clean)
+
+    print(f"✅ Total de tareas limpias: {len(all_cleaned)}")
+
+    if not all_cleaned:
+        print("⚠️ No se encontraron tareas nuevas.")
         return
 
-    CHROMA_PATH.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    embed_fns = load_embedding_functions()
-    registry = load_registry()
+    ids = [t["id"] for t in all_cleaned]
+    docs = [json.dumps(t, ensure_ascii=False) for t in all_cleaned]
+    metas: List[Dict[str, Any]] = all_cleaned  # ✅ corregido para tipado exacto
 
-    # Colección principal
-    try:
-        if reset:
-            client.delete_collection(COLLECTION_NAME)
-            print(f"🗑️ Colección '{COLLECTION_NAME}' eliminada (reset).")
-
-        collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            embedding_function=embed_fns["semantic"],
-            metadata={
-                "source": "clickup",
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "hybrid_mode": "MiniLM + Jina" if "dense" in embed_fns else "MiniLM",
-            },
-        )
-    except Exception as e:
-        print(f"❌ Error al abrir o crear la colección: {e}")
-        return
-
-    print(f"📂 Colección activa: {COLLECTION_NAME}")
-
-    # =========================================================
-    # 🔍 Extraer hashes ya existentes
-    # =========================================================
-    try:
-        existing = cast(Dict[str, Any], collection.get(include=cast(Any, ["metadatas"])) or {"metadatas": []})
-    except Exception:
-        existing = {"metadatas": []}
-
-    metas = existing.get("metadatas") or []
-    existing_hashes = {(m or {}).get("chunk_hash") for m in metas if (m or {}).get("chunk_hash")}
-    existing_hashes.discard(None)
-
-    print(f"🔍 {len(existing_hashes)} hashes ya indexados detectados.")
-
-    # =========================================================
-    # 🆕 Filtrar nuevos chunks
-    # =========================================================
-    new_chunks = [c for c in chunks if c.get("chunk_hash") not in existing_hashes]
-    if not new_chunks:
-        print("✅ No hay nuevos chunks para indexar.")
-        return
-
-    print(f"🆕 {len(new_chunks)} nuevos chunks detectados.")
-
-    ids, docs, metas = [], [], []
-
-    for ch in tqdm(new_chunks, desc="📤 Insertando nuevos chunks"):
-        cid = ch.get("chunk_id")
-        text = ch.get("text", "")
-        meta = ch.get("metadata", {})
-        chash = ch.get("chunk_hash")
-
-        if not cid or not text:
-            continue
-
-        # Embedding adicional Jina
-        if "dense" in embed_fns:
-            try:
-                emb_dense = embed_fns["dense"]([text])[0]
-                meta["embedding_dense"] = emb_dense
-            except Exception:
-                pass
-
-        # Limpieza de metadatos
-        clean_meta: Dict[str, Any] = {}
-        for k, v in (meta or {}).items():
-            if v is None:
-                continue
-            if isinstance(v, (list, dict)):
-                v = json.dumps(v, ensure_ascii=False)
-            if isinstance(v, (int, float, bool)):
-                clean_meta[k] = v
+    # Normaliza metadatas a valores primitivos (str|int|float|bool) requeridos por chromadb
+    def _normalize_metadata(m: Dict[str, Any]) -> Dict[str, str | int | float | bool]:
+        normalized: Dict[str, str | int | float | bool] = {}
+        for k, v in m.items():
+            # Permitir valores primitivos tal cual (None -> empty string)
+            if isinstance(v, (str, int, float, bool)):
+                normalized[k] = v
+            elif v is None:
+                normalized[k] = ""
             else:
-                clean_meta[k] = str(v).strip()
+                # Serializar valores no primitivos a JSON para garantizar tipos válidos
+                try:
+                    normalized[k] = json.dumps(v, ensure_ascii=False)
+                except Exception:
+                    normalized[k] = str(v)
+        return normalized
 
-        clean_meta["chunk_hash"] = chash
-        ids.append(cid)
-        docs.append(text)
-        metas.append(clean_meta)
+    metadatas: List[Mapping[str, str | int | float | bool]] = [_normalize_metadata(m) for m in metas]
 
-    # =========================================================
-    # 💾 Inserción en Chroma
-    # =========================================================
-    collection.upsert(ids=ids, documents=docs, metadatas=metas)
-    print(f"✅ Insertados {len(ids)} nuevos chunks en la colección.")
-
-    # =========================================================
-    # 🗂️ Actualizar registro
-    # =========================================================
-    registry["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    registry["new_chunks"] = len(ids)
-    save_registry(registry)
-
-    print("🗂️ Registro actualizado correctamente.")
-    print("🏁 Sincronización completada sin errores.\n")
+    # chromadb typing expects OneOrMany[Metadata]; cast to Any to satisfy the type checker
+    collection.upsert(ids=ids, documents=docs, metadatas=cast(Any, metadatas))
+    print(f"📤 {len(ids)} tareas insertadas o actualizadas en la colección.")
+    print("🏁 Sincronización completada correctamente.\n")
 
 
-# =============================================================
-# CLI
-# =============================================================
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Sincroniza nuevos chunks con ChromaDB.")
-    parser.add_argument("--reset", action="store_true", help="Reindexar desde cero (borra colección actual).")
-    args = parser.parse_args()
-
-    main(reset=args.reset)
+    main()
