@@ -26,6 +26,7 @@ async def handle_query(query: str) -> str:
         return await _sync_clickup()
     try:
         return cast(Any, hybrid_search).answer(q)
+
     except Exception as e:
         traceback.print_exc()
         return f"❌ Error procesando la consulta: {e}"
