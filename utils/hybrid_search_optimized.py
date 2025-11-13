@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class HybridSearchOptimized:
+class HybridSearch:
     """Motor de búsqueda híbrida con optimizaciones profesionales."""
 
     def __init__(
@@ -266,9 +266,9 @@ class HybridSearchOptimized:
     def get_sprint_metrics(self, sprint: str) -> Dict[str, Any]:
         """Obtiene métricas completas de un sprint."""
         try:
-            sprint_filter = {"sprint": sprint}
+            sprint_filter = cast(Any, {"sprint": sprint})
             result = self.collection.get(where=sprint_filter, limit=1000)
-            metadatas = result.get('metadatas', [])
+            metadatas = result.get('metadatas') or []
             
             total = len(metadatas)
             if total == 0:
@@ -332,7 +332,7 @@ class HybridSearchOptimized:
     def count_tasks(self, where: Optional[Dict[str, Any]] = None) -> int:
         """Cuenta tareas que coinciden con los filtros."""
         try:
-            result = self.collection.get(where=where, limit=1000)
+            result = self.collection.get(where=cast(Any, where), limit=1000)
             return len(result['ids'])
         except Exception as e:
             logger.error(f"⚠️ Error contando tareas: {e}")
@@ -341,7 +341,7 @@ class HybridSearchOptimized:
     def aggregate_by_field(self, field: str, where: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
         """Agrega tareas por un campo específico."""
         try:
-            result = self.collection.get(where=where, limit=1000)
+            result = self.collection.get(where=cast(Any, where), limit=1000)
             aggregation: Dict[str, int] = {}
             metadatas = result.get('metadatas') or []
             for meta in metadatas:

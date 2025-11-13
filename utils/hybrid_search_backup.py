@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hybrid_search_optimized.py — Versión optimizada con mejoras profesionales
---------------------------------------------------------------------------
-Mejoras implementadas:
- • Caché de embeddings para performance
- • Logging robusto y comprehensivo
- • Métricas avanzadas de sprint
- • Comparación entre sprints
- • Detalles enriquecidos de tareas con subtareas
- • Manejo de errores profesional
+HybridSearch — versión extendida con GPT-4o-mini
+------------------------------------------------
+Motor central del agente gestor:
+ • Recuperación híbrida (embeddings + rerank)
+ • Integración con ChromaDB persistente
+ • Generación natural de respuesta usando GPT-4o-mini
 """
 
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Optional, Sequence, cast
 import re
-import hashlib
-import logging
-from datetime import datetime
-from functools import lru_cache
-
 import numpy as np
 import torch
 import chromadb
@@ -27,53 +19,40 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from openai import OpenAI
 
-# Configurar logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 class HybridSearch:
-    """Motor de búsqueda híbrida con optimizaciones profesionales."""
+    """Motor principal de búsqueda híbrida + generación conversacional."""
 
     def __init__(
         self,
         collection_name: str = "clickup_tasks",
         db_path: Optional[str] = None,
-        cache_size: int = 100,
     ) -> None:
         self.db_path = db_path or "data/rag/chroma_db"
         self.client = chromadb.PersistentClient(path=self.db_path)
         self.collection = self.client.get_or_create_collection(collection_name)
-        logger.info(f"✅ HybridSearch inicializado sobre colección '{collection_name}'.")
+        print(f"✅ HybridSearch inicializado sobre colección '{collection_name}'.")
 
-        # Caché de embeddings
-        self._embedding_cache: Dict[str, List[float]] = {}
-        self._cache_size = cache_size
-
-        # Lazy loading
+        # --- Inicialización diferida (lazy loading) ---
         self._embedder: Optional[SentenceTransformer] = None
         self._rerank_tokenizer: Optional[Any] = None
         self._rerank_model: Optional[AutoModelForSequenceClassification] = None
         self._llm: Optional[OpenAI] = None
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"🖥️  Usando dispositivo: {self.device}")
 
     # =============================================================
-    # Embeddings con caché
+    # Embeddings y búsqueda
     # =============================================================
     def _ensure_embedder(self) -> SentenceTransformer:
         if self._embedder is None:
-            logger.info("🧠 Cargando modelo de embeddings MiniLM...")
+            print("🧠 Cargando modelo de embeddings MiniLM...")
             self._embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L12-v2")
         return self._embedder
 
     def _ensure_reranker(self):
         if self._rerank_model is None or self._rerank_tokenizer is None:
-            logger.info("🧩 Cargando modelo de reranking (MiniLM CrossEncoder)...")
+            print("🧩 Cargando modelo de reranking (MiniLM CrossEncoder)...")
             self._rerank_tokenizer = AutoTokenizer.from_pretrained("cross-encoder/ms-marco-MiniLM-L-12-v2")
             self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
                 "cross-encoder/ms-marco-MiniLM-L-12-v2"
@@ -81,34 +60,13 @@ class HybridSearch:
 
     def _ensure_llm(self) -> OpenAI:
         if self._llm is None:
-            self._llm = OpenAI()
+            self._llm = OpenAI()  # usa la variable de entorno OPENAI_API_KEY
         return self._llm
 
     def _embed_query(self, text: str) -> List[float]:
-        """Embed con caché para queries repetidas."""
-        # Generar clave de caché
-        cache_key = hashlib.md5(text.encode()).hexdigest()
-        
-        # Verificar caché
-        if cache_key in self._embedding_cache:
-            logger.debug(f"🎯 Caché hit para query: '{text[:30]}...'")
-            return self._embedding_cache[cache_key]
-        
-        # Generar embedding
         model = self._ensure_embedder()
         emb = model.encode(text, convert_to_numpy=True)
-        emb_list = emb.astype(np.float32).tolist()
-        
-        # Guardar en caché (con límite)
-        if len(self._embedding_cache) >= self._cache_size:
-            # Eliminar entrada más antigua (FIFO)
-            oldest_key = next(iter(self._embedding_cache))
-            del self._embedding_cache[oldest_key]
-        
-        self._embedding_cache[cache_key] = emb_list
-        logger.debug(f"💾 Embedding cacheado para: '{text[:30]}...'")
-        
-        return emb_list
+        return emb.astype(np.float32).tolist()
 
     def search(
         self, 
@@ -118,75 +76,78 @@ class HybridSearch:
         where_document: Optional[Dict[str, Any]] = None,
         use_filters: bool = False
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Búsqueda con logging comprehensivo."""
-        try:
-            start_time = datetime.now()
-            logger.info(f"🔍 Nueva búsqueda: '{query[:50]}...'")
+        """Devuelve documentos relevantes según embeddings + rerank + filtros.
+        
+        Args:
+            query: Texto de búsqueda
+            top_k: Número de resultados
+            where: Filtros de metadata (ej: {"status": "to_do", "sprint": "Sprint 1"})
+            where_document: Filtros en el contenido del documento
+            use_filters: Si True, extrae filtros automáticamente desde la query
             
-            # Extraer filtros
-            post_filters = {}
-            if use_filters and not where:
-                where = self._extract_filters_from_query(query)
-                if where and "is_blocked" in str(where):
-                    import json
-                    where_str = json.dumps(where)
-                    if '"is_blocked": true' in where_str.lower():
-                        post_filters["is_blocked"] = True
-                        where = self._remove_boolean_filters(where)
-                if where:
-                    logger.info(f"🔍 Filtros ChromaDB: {where}")
-                if post_filters:
-                    logger.info(f"🔍 Post-filtros (Python): {post_filters}")
-            
-            q_emb = self._embed_query(query)
-            
-            n_results = 50 if post_filters and not where else top_k
-            search_params: Dict[str, Any] = {
-                "query_embeddings": [q_emb],
-                "n_results": n_results,
-                "include": cast(Any, ["documents", "metadatas"])
-            }
-            
+        Returns:
+            Tupla de (documentos, metadatas)
+        """
+        # Extraer filtros automáticamente si está habilitado
+        post_filters = {}
+        if use_filters and not where:
+            where = self._extract_filters_from_query(query)
+            # Extraer filtros booleanos para post-procesamiento
+            if where and "is_blocked" in str(where):
+                import json
+                where_str = json.dumps(where)
+                if '"is_blocked": true' in where_str.lower():
+                    post_filters["is_blocked"] = True
+                    # Remover del where de ChromaDB
+                    where = self._remove_boolean_filters(where)
             if where:
-                search_params["where"] = where
-            if where_document:
-                search_params["where_document"] = where_document
-            
-            res = self.collection.query(**search_params)
+                print(f"🔍 Filtros ChromaDB: {where}")
+            if post_filters:
+                print(f"🔍 Post-filtros (Python): {post_filters}")
+        
+        q_emb = self._embed_query(query)
+        
+        # Preparar parámetros de búsqueda
+        # Si solo hay post-filtros, necesitamos buscar TODOS los documentos relevantes
+        # para luego filtrar en Python
+        n_results = 50 if post_filters and not where else top_k
+        search_params: Dict[str, Any] = {
+            "query_embeddings": [q_emb],
+            "n_results": n_results,
+            "include": cast(Any, ["documents", "metadatas"])
+        }
+        
+        # Agregar filtros si existen
+        if where:
+            search_params["where"] = where
+        if where_document:
+            search_params["where_document"] = where_document
+        
+        res = self.collection.query(**search_params)
 
-            docs_container = res.get("documents")
-            metas_container = res.get("metadatas")
+        docs_container = res.get("documents")
+        metas_container = res.get("metadatas")
 
-            docs = cast(List[str], docs_container[0] if docs_container and len(docs_container) > 0 else [])
-            metas = cast(List[Dict[str, Any]], metas_container[0] if metas_container and len(metas_container) > 0 else [])
+        docs = cast(List[str], docs_container[0] if docs_container and len(docs_container) > 0 else [])
+        metas = cast(List[Dict[str, Any]], metas_container[0] if metas_container and len(metas_container) > 0 else [])
 
-            if not docs or not metas:
-                logger.warning(f"⚠️  No se encontraron resultados para: '{query[:50]}...'")
+        if not docs or not metas:
+            return [], []
+
+        # Post-filtrado para campos booleanos
+        if post_filters:
+            filtered_docs, filtered_metas = [], []
+            for doc, meta in zip(docs, metas):
+                matches = all(meta.get(k) == v for k, v in post_filters.items())
+                if matches:
+                    filtered_docs.append(doc)
+                    filtered_metas.append(meta)
+            docs, metas = filtered_docs[:top_k], filtered_metas[:top_k]
+            if not docs:
                 return [], []
 
-            # Post-filtrado
-            if post_filters:
-                filtered_docs, filtered_metas = [], []
-                for doc, meta in zip(docs, metas):
-                    matches = all(meta.get(k) == v for k, v in post_filters.items())
-                    if matches:
-                        filtered_docs.append(doc)
-                        filtered_metas.append(meta)
-                docs, metas = filtered_docs[:top_k], filtered_metas[:top_k]
-                if not docs:
-                    logger.warning(f"⚠️  Post-filtrado eliminó todos los resultados")
-                    return [], []
-
-            docs, metas = self._rerank(query, docs, metas)
-            
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(f"✅ Búsqueda completada en {elapsed:.2f}s - {len(docs)} resultados")
-            
-            return docs, metas
-            
-        except Exception as e:
-            logger.error(f"❌ Error en búsqueda: {e}", exc_info=True)
-            return [], []
+        docs, metas = self._rerank(query, docs, metas)
+        return docs, metas
     
     def _remove_boolean_filters(self, where: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Remueve filtros booleanos del dict para ChromaDB."""
@@ -201,6 +162,9 @@ class HybridSearch:
         else:
             return {k: v for k, v in where.items() if k != "is_blocked"} or None
 
+    # =============================================================
+    # Reranking con CrossEncoder
+    # =============================================================
     def _rerank(self, query: str, docs: List[str], metas: List[Dict[str, Any]]) -> Tuple[List[str], List[Dict[str, Any]]]:
         self._ensure_reranker()
         assert self._rerank_tokenizer and self._rerank_model
@@ -215,17 +179,29 @@ class HybridSearch:
         ).to(self.device)
 
         with torch.no_grad():
+            # Call the model directly (cast to Any to avoid type checker issues)
             outputs = cast(Any, self._rerank_model)(**enc)
             scores = outputs.logits.squeeze(-1)
 
         idxs = torch.argsort(scores, descending=True).tolist()
         return [docs[i] for i in idxs], [metas[i] for i in idxs]
 
+    # =============================================================
+    # Detección inteligente de filtros desde query
+    # =============================================================
     def _extract_filters_from_query(self, query: str) -> Optional[Dict[str, Any]]:
-        """Extrae filtros de metadata desde la query."""
+        """Extrae filtros de metadata desde la query en lenguaje natural.
+        
+        Ejemplos:
+        - "tareas pendientes" → {"status": "to_do"}
+        - "tareas bloqueadas" → {"is_blocked": True}
+        - "tareas del Sprint 1" → {"sprint": "Sprint 1"}
+        - "tareas urgentes" → {"priority": "urgent"}
+        """
         query_lower = query.lower()
         filters: Dict[str, Any] = {}
         
+        # Detectar estados
         if "pendiente" in query_lower or "por hacer" in query_lower:
             filters["status"] = "to_do"
         elif "en progreso" in query_lower or "trabajando" in query_lower:
@@ -239,13 +215,16 @@ class HybridSearch:
         elif "cancelada" in query_lower:
             filters["status"] = "cancelled"
         
+        # Detectar flags (se manejarán con post-filtrado)
         if "bloqueada" in query_lower or "bloqueado" in query_lower:
             filters["is_blocked"] = True
         
+        # Detectar sprint
         sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
         if sprint_match:
             filters["sprint"] = f"Sprint {sprint_match.group(1)}"
         
+        # Detectar prioridad
         if "urgente" in query_lower:
             filters["priority"] = "urgent"
         elif "alta prioridad" in query_lower or "prioridad alta" in query_lower:
@@ -253,6 +232,7 @@ class HybridSearch:
         elif "baja prioridad" in query_lower or "prioridad baja" in query_lower:
             filters["priority"] = "low"
         
+        # Si hay múltiples filtros, usar sintaxis $and de ChromaDB
         if len(filters) > 1:
             conditions = [{k: v} for k, v in filters.items()]
             return {"$and": conditions}
@@ -260,88 +240,21 @@ class HybridSearch:
         return filters if filters else None
 
     # =============================================================
-    # Nuevas funciones: Métricas avanzadas
+    # Agregaciones y conteo
     # =============================================================
-    
-    def get_sprint_metrics(self, sprint: str) -> Dict[str, Any]:
-        """Obtiene métricas completas de un sprint."""
-        try:
-            sprint_filter = cast(Any, {"sprint": sprint})
-            result = self.collection.get(where=sprint_filter, limit=1000)
-            metadatas = result.get('metadatas') or []
-            
-            total = len(metadatas)
-            if total == 0:
-                return {"error": f"No hay tareas en {sprint}"}
-            
-            done = sum(1 for m in metadatas if m.get('status') == 'done')
-            in_progress = sum(1 for m in metadatas if m.get('status') == 'in_progress')
-            to_do = sum(1 for m in metadatas if m.get('status') == 'to_do')
-            qa = sum(1 for m in metadatas if m.get('status') == 'qa')
-            review = sum(1 for m in metadatas if m.get('status') == 'review')
-            blocked = sum(1 for m in metadatas if m.get('is_blocked', False))
-            high_priority = sum(1 for m in metadatas if m.get('priority') in ['high', 'urgent'])
-            
-            return {
-                "sprint": sprint,
-                "total": total,
-                "completadas": done,
-                "en_progreso": in_progress,
-                "pendientes": to_do,
-                "qa": qa,
-                "review": review,
-                "bloqueadas": blocked,
-                "porcentaje_completitud": round((done / total) * 100, 1) if total > 0 else 0,
-                "alta_prioridad": high_priority,
-                "velocidad": done
-            }
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo métricas de {sprint}: {e}")
-            return {"error": str(e)}
-    
-    def compare_sprints(self, sprints: List[str]) -> str:
-        """Compara múltiples sprints."""
-        try:
-            logger.info(f"📊 Comparando sprints: {sprints}")
-            metrics = [self.get_sprint_metrics(s) for s in sprints]
-            
-            response = "📊 **Comparación de Sprints**\n\n"
-            for m in metrics:
-                if "error" in m:
-                    response += f"⚠️ {m['sprint']}: {m['error']}\n\n"
-                    continue
-                
-                response += f"**{m['sprint']}**:\n"
-                response += f"  • Completitud: {m['porcentaje_completitud']}% ({m['completadas']}/{m['total']} tareas)\n"
-                response += f"  • En progreso: {m['en_progreso']}\n"
-                response += f"  • Pendientes: {m['pendientes']}\n"
-                response += f"  • QA/Review: {m['qa']}/{m['review']}\n"
-                response += f"  • Bloqueadas: {m['bloqueadas']}\n"
-                response += f"  • Alta prioridad: {m['alta_prioridad']}\n"
-                response += f"  • Velocidad: {m['velocidad']} tareas completadas\n\n"
-            
-            return response.strip()
-        except Exception as e:
-            logger.error(f"❌ Error comparando sprints: {e}")
-            return f"❌ Error al comparar sprints: {e}"
-
-    # =============================================================
-    # Conteo y agregaciones
-    # =============================================================
-    
     def count_tasks(self, where: Optional[Dict[str, Any]] = None) -> int:
         """Cuenta tareas que coinciden con los filtros."""
         try:
-            result = self.collection.get(where=cast(Any, where), limit=1000)
+            result = self.collection.get(where=where, limit=1000)
             return len(result['ids'])
         except Exception as e:
-            logger.error(f"⚠️ Error contando tareas: {e}")
+            print(f"⚠️ Error contando tareas: {e}")
             return 0
     
     def aggregate_by_field(self, field: str, where: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
-        """Agrega tareas por un campo específico."""
+        """Agrega tareas por un campo específico (sprint, status, priority, etc)."""
         try:
-            result = self.collection.get(where=cast(Any, where), limit=1000)
+            result = self.collection.get(where=where, limit=1000)
             aggregation: Dict[str, int] = {}
             metadatas = result.get('metadatas') or []
             for meta in metadatas:
@@ -349,24 +262,29 @@ class HybridSearch:
                 aggregation[value] = aggregation.get(value, 0) + 1
             return aggregation
         except Exception as e:
-            logger.error(f"⚠️ Error agregando por {field}: {e}")
+            print(f"⚠️ Error agregando por {field}: {e}")
             return {}
     
     def _handle_count_question(self, query: str) -> str:
-        """Maneja preguntas de conteo."""
+        """Maneja preguntas de conteo como '¿cuántas tareas hay en el sprint 2?'"""
         query_lower = query.lower()
         
+        # Detectar sprint
         sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
         sprint_filter = None
         if sprint_match:
             sprint_num = sprint_match.group(1)
             sprint_filter = {"sprint": f"Sprint {sprint_num}"}
         
+        # Detectar "sprint actual" (asumimos Sprint 3 como actual)
         if "actual" in query_lower or "corriente" in query_lower:
             sprint_filter = {"sprint": "Sprint 3"}
         
+        # Detectar estado
         state_filter = None
         if "curso" in query_lower or "en progreso" in query_lower or "no completadas" in query_lower:
+            # Tareas en curso: todas menos "done"
+            # Nota: ChromaDB usa $ne para "not equal"
             state_filter = {"status": {"$ne": "done"}}
         elif "completadas" in query_lower or "finalizadas" in query_lower:
             state_filter = {"status": "done"}
@@ -379,6 +297,7 @@ class HybridSearch:
         elif "review" in query_lower or "revisión" in query_lower:
             state_filter = {"status": "review"}
         
+        # Combinar filtros
         combined_filter = None
         if sprint_filter and state_filter:
             combined_filter = {"$and": [sprint_filter, state_filter]}
@@ -387,8 +306,10 @@ class HybridSearch:
         elif state_filter:
             combined_filter = state_filter
         
+        # Contar
         count = self.count_tasks(where=combined_filter)
         
+        # Obtener tareas si el conteo es bajo (para dar más contexto)
         task_names = []
         if count > 0 and count <= 5:
             try:
@@ -398,6 +319,7 @@ class HybridSearch:
             except Exception:
                 pass
         
+        # Generar respuesta
         if sprint_match:
             sprint_text = f"Sprint {sprint_match.group(1)}"
         elif "actual" in query_lower:
@@ -425,11 +347,14 @@ class HybridSearch:
         else:
             state_text = ""
         
+        # Construir respuesta base (con concordancia de número)
         plural = count != 1
         if sprint_text != "total" and state_text:
+            # Ajustar género/número del estado según la cantidad
             if plural:
                 base_response = f"En {sprint_text} hay {count} tareas {state_text}"
             else:
+                # Singular: ajustar terminación del estado
                 state_singular = state_text.rstrip('s') if state_text.endswith('as') or state_text.endswith('es') else state_text
                 base_response = f"En {sprint_text} hay {count} tarea {state_singular}"
         elif sprint_text != "total":
@@ -443,6 +368,7 @@ class HybridSearch:
         else:
             base_response = f"Hay un total de {count} tarea{'s' if plural else ''} en el proyecto"
         
+        # Añadir lista de tareas si hay pocas
         if task_names:
             if count == 1:
                 return f"{base_response}: \"{task_names[0]}\"."
@@ -455,15 +381,16 @@ class HybridSearch:
     # =============================================================
     # Generador con GPT-4o-mini
     # =============================================================
-    
     def answer(self, query: str, top_k: int = 6, temperature: float = 0.4, use_filters: bool = True) -> str:
-        """Genera respuesta contextualizada con manejo robusto de errores."""
+        """Genera respuesta contextualizada con GPT-4o-mini usando prompts profesionales.
+        
+        Args:
+            query: Pregunta del usuario
+            top_k: Número de documentos a recuperar
+            temperature: Temperatura del LLM (0-1)
+            use_filters: Si True, extrae filtros de la query automáticamente
+        """
         try:
-            # Validar entrada
-            if not query or len(query.strip()) < 3:
-                return "❓ Por favor, formula una pregunta más específica."
-            
-            logger.info(f"💬 Generando respuesta para: '{query[:50]}...'")
             query_lower = query.lower()
             
             # Detectar preguntas de conteo
@@ -474,42 +401,12 @@ class HybridSearch:
             if is_count_question:
                 return self._handle_count_question(query)
             
-            # Detectar comparaciones
-            is_comparison = any(word in query_lower for word in [
-                'compar', 'vs', 'versus', 'diferencia'
-            ])
-            
-            if is_comparison:
-                sprint_matches = re.findall(r"sprint\s*(\d+)", query_lower)
-                if len(sprint_matches) >= 2:
-                    sprints = [f"Sprint {num}" for num in sprint_matches]
-                    return self.compare_sprints(sprints)
-                elif "sprint 1" in query_lower and "sprint 2" in query_lower:
-                    return self.compare_sprints(["Sprint 1", "Sprint 2", "Sprint 3"])
-            
-            # Detectar solicitud de métricas
-            if "progreso" in query_lower or "métrica" in query_lower or "resumen" in query_lower:
-                sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
-                if sprint_match:
-                    sprint = f"Sprint {sprint_match.group(1)}"
-                    metrics = self.get_sprint_metrics(sprint)
-                    if "error" not in metrics:
-                        return (
-                            f"📊 **Métricas de {metrics['sprint']}**\n\n"
-                            f"• Completitud: {metrics['porcentaje_completitud']}% ({metrics['completadas']}/{metrics['total']} tareas)\n"
-                            f"• En progreso: {metrics['en_progreso']}\n"
-                            f"• Pendientes: {metrics['pendientes']}\n"
-                            f"• QA/Review: {metrics['qa']}/{metrics['review']}\n"
-                            f"• Bloqueadas: {metrics['bloqueadas']}\n"
-                            f"• Alta prioridad: {metrics['alta_prioridad']}\n"
-                            f"• Velocidad: {metrics['velocidad']} tareas completadas"
-                        )
-            
             docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
             if not docs:
                 from chatbot.prompts import RAG_NO_RESULTS
                 return RAG_NO_RESULTS
 
+            # Contexto enriquecido con todos los campos relevantes
             context_parts = []
             for m in metas[:top_k]:
                 status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
@@ -522,11 +419,12 @@ class HybridSearch:
             
             context = "\n\n".join(context_parts)
 
+            # Usar prompts profesionales del archivo prompts.py
             from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
             
             system_prompt = SYSTEM_INSTRUCTIONS
             user_prompt = RAG_CONTEXT_PROMPT.format(
-                system="",
+                system="",  # Ya está en el mensaje de sistema
                 context=context,
                 question=query
             )
@@ -544,10 +442,6 @@ class HybridSearch:
             content = completion.choices[0].message.content
             return content.strip() if content else "No se pudo generar respuesta."
 
-        except ConnectionError as e:
-            logger.error(f"❌ Error de conexión con OpenAI: {e}")
-            return ("❌ Error de conexión con el servicio de IA. "
-                   "Por favor, verifica tu conexión a internet e intenta de nuevo.")
         except Exception as e:
-            logger.error(f"❌ Error inesperado en answer(): {e}", exc_info=True)
-            return f"❌ Ocurrió un error procesando tu consulta: {str(e)[:100]}"
+            print(f"⚠️ Error en HybridSearch.answer(): {e}")
+            return f"❌ No se pudo generar la respuesta: {e}"
