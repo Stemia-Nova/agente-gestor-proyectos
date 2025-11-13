@@ -16,6 +16,7 @@ import requests
 import traceback
 import json
 import csv
+import time
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
@@ -91,10 +92,84 @@ except requests.exceptions.RequestException as e:
     exit(1)
 
 # =============================================================
+# FUNCIONES DE ENRIQUECIMIENTO DE TAREAS
+# =============================================================
+
+def should_fetch_comments(task: dict) -> bool:
+    """
+    Determina si una tarea debe tener sus comentarios descargados.
+    Criterios:
+    - Tiene tags (especialmente 'bloqueada', 'data', 'duda')
+    - Estado bloqueado
+    - Tiene subtareas (coordinación)
+    """
+    tags = task.get("tags", [])
+    if not tags:
+        return False
+    
+    tag_names = [tag.get("name", "").lower() for tag in tags]
+    
+    # Tags críticas que indican necesidad de comentarios
+    critical_tags = ["bloqueada", "blocked", "bloquer", "data", "datos", 
+                     "duda", "pregunta", "question", "review", "revisión"]
+    
+    return any(critical in tag for tag in tag_names for critical in critical_tags)
+
+
+def get_task_comments(task_id: str, task_name: str = "", max_comments: int = 50) -> list:
+    """Obtiene los comentarios de una tarea específica."""
+    url = f"https://api.clickup.com/api/v2/task/{task_id}/comment"
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            comments_data = response.json()
+            comments = comments_data.get("comments", [])
+            # Limitar a max_comments y extraer info relevante
+            return [{
+                "id": c.get("id"),
+                "comment_text": c.get("comment_text", ""),
+                "user": c.get("user", {}).get("username", "unknown"),
+                "date": c.get("date"),
+                "resolved": c.get("resolved", False)
+            } for c in comments[:max_comments]]
+        elif response.status_code == 429:
+            print(f"      ⚠️ Rate limit alcanzado, esperando...")
+            time.sleep(2)
+            return []
+        return []
+    except Exception as e:
+        print(f"      ⚠️ Error al obtener comentarios de {task_name[:30]}: {e}")
+        return []
+
+
+def organize_subtasks(all_tasks: list) -> dict:
+    """
+    Organiza las tareas en una estructura parent-child.
+    Retorna un diccionario: parent_id -> [lista de subtareas]
+    """
+    subtasks_by_parent = {}
+    
+    for task in all_tasks:
+        parent_id = task.get("parent")
+        if parent_id:
+            if parent_id not in subtasks_by_parent:
+                subtasks_by_parent[parent_id] = []
+            subtasks_by_parent[parent_id].append({
+                "id": task.get("id"),
+                "name": task.get("name"),
+                "status": task.get("status", {}).get("status"),
+                "assignees": [a.get("username") for a in task.get("assignees", [])]
+            })
+    
+    return subtasks_by_parent
+
+
+# =============================================================
 # DESCARGA TODAS LAS TAREAS (Y SUBTAREAS) DE CADA LISTA
 # =============================================================
 
 all_tasks = []
+tasks_by_id = {}  # Para mapear parent-child relationships
 
 for l in lists:
     lid = l["id"]
@@ -124,6 +199,7 @@ for l in lists:
                 for t in tasks:
                     t["sprint_name"] = lname
                     t["sprint_id"] = lid
+                    tasks_by_id[t["id"]] = t
                 total_tasks_list.extend(tasks)
                 page += 1
             else:
@@ -142,6 +218,71 @@ print(f"\n📊 Total de tareas recopiladas (incluyendo subtareas): {len(all_task
 if not all_tasks:
     print("⚠️ No se encontraron tareas. Fin del proceso.")
     exit(0)
+
+# =============================================================
+# ENRIQUECIMIENTO: Organizar subtareas y añadir comentarios
+# =============================================================
+
+print(f"\n🔗 Organizando relaciones parent-child...")
+subtasks_map = organize_subtasks(all_tasks)
+print(f"✅ {len(subtasks_map)} tareas padre con subtareas identificadas")
+
+# Añadir lista de subtareas a cada tarea padre
+for task in all_tasks:
+    task_id = task.get("id")
+    if task_id in subtasks_map:
+        task["subtasks"] = subtasks_map[task_id]
+        task["has_subtasks"] = True
+        task["subtasks_count"] = len(subtasks_map[task_id])
+    else:
+        task["has_subtasks"] = False
+        task["subtasks_count"] = 0
+
+print(f"\n💬 Enriqueciendo tareas relevantes con comentarios...")
+tasks_to_enrich = [t for t in all_tasks if should_fetch_comments(t)]
+print(f"   📋 {len(tasks_to_enrich)} tareas necesitan comentarios (tienen tags relevantes)")
+
+tasks_with_comments = 0
+total_comments = 0
+
+for i, task in enumerate(tasks_to_enrich):
+    task_id = task.get("id")
+    task_name = task.get("name", "Sin nombre")
+    
+    # Obtener comentarios solo de tareas relevantes
+    comments = get_task_comments(task_id, task_name)
+    if comments:
+        task["comments"] = comments
+        task["has_comments"] = True
+        task["comments_count"] = len(comments)
+        tasks_with_comments += 1
+        total_comments += len(comments)
+        print(f"   📝 [{i+1}/{len(tasks_to_enrich)}] {task_name[:40]}: {len(comments)} comentarios")
+    else:
+        task["has_comments"] = False
+        task["comments_count"] = 0
+    
+    # Rate limiting: pequeña pausa entre requests
+    if i > 0 and i % 5 == 0:
+        time.sleep(0.5)
+
+# Añadir campos has_comments y comments_count a todas las tareas sin comentarios
+for task in all_tasks:
+    if "has_comments" not in task:
+        task["has_comments"] = False
+        task["comments_count"] = 0
+
+print(f"\n✅ {tasks_with_comments} tareas con comentarios ({total_comments} comentarios totales)")
+
+# Añadir info del proyecto/folder para contexto multi-proyecto
+print(f"\n📁 Añadiendo contexto de proyecto/folder...")
+for task in all_tasks:
+    if task.get("folder"):
+        task["folder_name"] = task["folder"].get("name")
+        task["folder_id"] = task["folder"].get("id")
+    if task.get("project"):
+        task["project_name"] = task["project"].get("name")
+        task["project_id"] = task["project"].get("id")
 
 # =============================================================
 # GUARDADO LOCAL (JSON + CSV)

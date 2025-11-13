@@ -1,346 +1,314 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HybridSearch — RAG “listo para producción”
-------------------------------------------
-• Recuperación híbrida (embeddings → ChromaDB → rerank CrossEncoder)
-• Agregaciones deterministas (conteos por sprint, proyecto, asignatario, bloqueadas)
-• Normalización y tolerancia a typos
-• Generación de respuesta con GPT-4o-mini (opcional)
-
-Requisitos (pip):
-    sentence-transformers
-    chromadb
-    torch
-    transformers
-    openai>=1.0.0
-
-Variables de entorno:
-    OPENAI_API_KEY
+HybridSearch — versión extendida con GPT-4o-mini
+------------------------------------------------
+Motor central del agente gestor:
+ • Recuperación híbrida (embeddings + rerank)
+ • Integración con ChromaDB persistente
+ • Generación natural de respuesta usando GPT-4o-mini
+ • Filtros inteligentes con sintaxis $and de ChromaDB
+ • Post-filtrado para campos booleanos
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Optional, Sequence, cast
-import os
+from typing import Any, Dict, List, Tuple, Optional, cast
 import re
-import difflib
-from pathlib import Path
-
 import numpy as np
 import torch
-import torch.nn as nn
 import chromadb
-from chromadb.api.types import GetResult
-
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from openai import OpenAI
 
 
-# =========================
-# Config
-# =========================
-@dataclass
-class HybridConfig:
-    collection_name: str = "clickup_tasks"
-    db_path: str = "data/rag/chroma_db"
-    embedder_model: str = "sentence-transformers/all-MiniLM-L12-v2"
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
-    chroma_get_limit: int = 100_000
-    openai_model: str = "gpt-4o-mini"
-    temperature: float = 0.4
-
-
 class HybridSearch:
-    """Motor de búsqueda híbrida + agregaciones deterministas + generación LLM."""
+    """Motor principal de búsqueda híbrida + generación conversacional."""
 
-    def __init__(self, cfg: Optional[HybridConfig] = None) -> None:
-        self.cfg = cfg or HybridConfig()
+    def __init__(
+        self,
+        collection_name: str = "clickup_tasks",
+        db_path: Optional[str] = None,
+    ) -> None:
+        self.db_path = db_path or "data/rag/chroma_db"
+        self.client = chromadb.PersistentClient(path=self.db_path)
+        self.collection = self.client.get_or_create_collection(collection_name)
+        print(f"✅ HybridSearch inicializado sobre colección '{collection_name}'.")
 
-        # Chroma persistente
-        self.client = chromadb.PersistentClient(path=self.cfg.db_path)
-        self.collection = self.client.get_or_create_collection(self.cfg.collection_name)
-        print(f"✅ HybridSearch conectado a '{self.cfg.collection_name}' en '{self.cfg.db_path}'")
-
-        # Lazy loading de modelos
+        # --- Inicialización diferida (lazy loading) ---
         self._embedder: Optional[SentenceTransformer] = None
-        self._rerank_tok: Optional[PreTrainedTokenizerBase] = None
-        self._rerank_model: Optional[nn.Module] = None  # nn.Module expone .eval()
+        self._rerank_tokenizer: Optional[Any] = None
+        self._rerank_model: Optional[AutoModelForSequenceClassification] = None
+        self._llm: Optional[OpenAI] = None
 
-        # OpenAI (opcional)
-        self._openai_enabled = bool(os.getenv("OPENAI_API_KEY"))
-        self.llm = OpenAI() if self._openai_enabled else None
-
-        # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # -------------------------
-    # Helpers
-    # -------------------------
-    @staticmethod
-    def _norm(s: Optional[str]) -> str:
-        # Seguro frente a None
-        if s is None:
-            return ""
-        return s.strip().lower()
-
-    @staticmethod
-    def _split_assignees(s: Optional[str]) -> List[str]:
-        if not s:
-            return []
-        return [p.strip() for p in s.split(",") if p.strip()]
-
-    @staticmethod
-    def _closest(candidate: str, options: List[str], cutoff: float = 0.8) -> str:
-        if not candidate or not options:
-            return candidate
-        matches = difflib.get_close_matches(candidate, options, n=1, cutoff=cutoff)
-        return matches[0] if matches else candidate
-
-    # -------------------------
-    # Modelos
-    # -------------------------
+    # =============================================================
+    # Embeddings y búsqueda
+    # =============================================================
     def _ensure_embedder(self) -> SentenceTransformer:
         if self._embedder is None:
-            print("🧠 Cargando modelo de embeddings…")
-            self._embedder = SentenceTransformer(self.cfg.embedder_model)
+            print("🧠 Cargando modelo de embeddings MiniLM...")
+            self._embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L12-v2")
         return self._embedder
 
-    def _ensure_reranker(self) -> Tuple[PreTrainedTokenizerBase, nn.Module]:
-        if self._rerank_tok is None or self._rerank_model is None:
-            print("🧩 Cargando modelo de reranking…")
-            # Tipos concretos, pero anotados con base classes para Pylance
-            tok: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(self.cfg.reranker_model)  # type: ignore[assignment]
-            model: nn.Module = AutoModelForSequenceClassification.from_pretrained(
-                self.cfg.reranker_model
-            ).to(self.device)  # type: ignore[assignment]
-            model.eval()  # nn.Module expone eval() para Pylance
-            self._rerank_tok = tok
-            self._rerank_model = model
-        return self._rerank_tok, self._rerank_model  # type: ignore[return-value]
+    def _ensure_reranker(self):
+        if self._rerank_model is None or self._rerank_tokenizer is None:
+            print("🧩 Cargando modelo de reranking (MiniLM CrossEncoder)...")
+            self._rerank_tokenizer = AutoTokenizer.from_pretrained("cross-encoder/ms-marco-MiniLM-L-12-v2")
+            self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
+                "cross-encoder/ms-marco-MiniLM-L-12-v2"
+            ).to(self.device)
 
-    # -------------------------
-    # Búsqueda
-    # -------------------------
+    def _ensure_llm(self) -> OpenAI:
+        if self._llm is None:
+            self._llm = OpenAI()  # usa la variable de entorno OPENAI_API_KEY
+        return self._llm
+
     def _embed_query(self, text: str) -> List[float]:
-        emb = self._ensure_embedder().encode(text, convert_to_numpy=True)
+        model = self._ensure_embedder()
+        emb = model.encode(text, convert_to_numpy=True)
         return emb.astype(np.float32).tolist()
 
-    def search(self, query: str, top_k: int = 8) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Embeddings → Chroma → rerank CrossEncoder."""
+    def search(
+        self, 
+        query: str, 
+        top_k: int = 8,
+        where: Optional[Dict[str, Any]] = None,
+        where_document: Optional[Dict[str, Any]] = None,
+        use_filters: bool = False
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Devuelve documentos relevantes según embeddings + rerank + filtros.
+        
+        Args:
+            query: Texto de búsqueda
+            top_k: Número de resultados
+            where: Filtros de metadata (ej: {"status": "to_do", "sprint": "Sprint 1"})
+            where_document: Filtros en el contenido del documento
+            use_filters: Si True, extrae filtros automáticamente desde la query
+            
+        Returns:
+            Tupla de (documentos, metadatas)
+        """
+        # Extraer filtros automáticamente si está habilitado
+        post_filters = {}
+        if use_filters and not where:
+            where = self._extract_filters_from_query(query)
+            # Extraer filtros booleanos para post-procesamiento
+            if where and "is_blocked" in str(where):
+                post_filters["is_blocked"] = True
+                # Remover del where de ChromaDB
+                where = self._remove_boolean_filters(where)
+            if where:
+                print(f"🔍 Filtros ChromaDB: {where}")
+            elif post_filters:
+                print(f"🔍 Solo post-filtros: {post_filters}")
+        
         q_emb = self._embed_query(query)
-        res = self.collection.query(
-            query_embeddings=[q_emb],
-            n_results=top_k,
-            include=cast(Any, ["documents", "metadatas"]),  # stubs estrictos en Chroma
-        )
+        
+        # Preparar parámetros de búsqueda
+        search_params: Dict[str, Any] = {
+            "query_embeddings": [q_emb],
+            "n_results": top_k * 2 if post_filters else top_k,  # Pedir más si hay post-filtrado
+            "include": cast(Any, ["documents", "metadatas"])
+        }
+        
+        # Agregar filtros si existen
+        if where:
+            search_params["where"] = where
+        if where_document:
+            search_params["where_document"] = where_document
+        
+        res = self.collection.query(**search_params)
 
-        raw_docs = res.get("documents")
-        raw_metas = res.get("metadatas")
+        docs_container = res.get("documents")
+        metas_container = res.get("metadatas")
 
-        # Defaults seguros para evitar “Object of type None is not subscriptable”
-        docs_list: List[List[str]] = cast(List[List[str]], raw_docs or [[]])
-        metas_list: List[List[Dict[str, Any]]] = cast(List[List[Dict[str, Any]]], raw_metas or [[]])
-
-        docs: List[str] = docs_list[0] if docs_list else []
-        metas: List[Dict[str, Any]] = metas_list[0] if metas_list else []
+        docs = cast(List[str], docs_container[0] if docs_container and len(docs_container) > 0 else [])
+        metas = cast(List[Dict[str, Any]], metas_container[0] if metas_container and len(metas_container) > 0 else [])
 
         if not docs or not metas:
             return [], []
 
-        return self._rerank(query, docs, metas)
+        # Post-filtrado para campos booleanos
+        if post_filters:
+            filtered_docs, filtered_metas = [], []
+            for doc, meta in zip(docs, metas):
+                if all(meta.get(k) == v for k, v in post_filters.items()):
+                    filtered_docs.append(doc)
+                    filtered_metas.append(meta)
+            docs, metas = filtered_docs[:top_k], filtered_metas[:top_k]
+            if not docs:
+                return [], []
 
-    def _rerank(
-        self,
-        query: str,
-        docs: Sequence[str],
-        metas: Sequence[Dict[str, Any]],
-    ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        tok, model = self._ensure_reranker()
+        docs, metas = self._rerank(query, docs, metas)
+        return docs, metas
+    
+    def _remove_boolean_filters(self, where: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Remueve filtros booleanos del dict para ChromaDB."""
+        if "$and" in where:
+            conditions = [c for c in where["$and"] if "is_blocked" not in c]
+            if len(conditions) == 0:
+                return None
+            elif len(conditions) == 1:
+                return conditions[0]
+            else:
+                return {"$and": conditions}
+        else:
+            filtered = {k: v for k, v in where.items() if k != "is_blocked"}
+            return filtered if filtered else None
+
+    # =============================================================
+    # Reranking con CrossEncoder
+    # =============================================================
+    def _rerank(self, query: str, docs: List[str], metas: List[Dict[str, Any]]) -> Tuple[List[str], List[Dict[str, Any]]]:
+        self._ensure_reranker()
+        assert self._rerank_tokenizer and self._rerank_model
 
         pairs = [(query, d) for d in docs]
-        enc = tok(
+        enc = self._rerank_tokenizer(
             [p[0] for p in pairs],
             [p[1] for p in pairs],
             padding=True,
             truncation=True,
-            max_length=512,
-            return_tensors="pt",
+            return_tensors="pt"
         ).to(self.device)
 
         with torch.no_grad():
-            outputs = model(**enc)  # nn.Module es “callable”
-            # logits: [batch, 1] → squeeze para [batch]
-            scores = cast(torch.Tensor, outputs.logits).squeeze(-1)
+            outputs = self._rerank_model(**enc)
+            scores = outputs.logits.squeeze(-1)
 
         idxs = torch.argsort(scores, descending=True).tolist()
-        # Ensure types match the declared return type: List[str], List[Dict[str, Any]]
-        reranked_docs = [str(docs[i]) for i in idxs]
-        reranked_metas = [cast(Dict[str, Any], metas[i]) for i in idxs]
-        return reranked_docs, reranked_metas
+        return [docs[i] for i in idxs], [metas[i] for i in idxs]
 
-    # -------------------------
-    # Metadatos globales
-    # -------------------------
-    def _get_all_metas(self) -> List[Dict[str, Any]]:
-        res: GetResult = self.collection.get(
-            include=cast(Any, ["metadatas"]),
-            limit=self.cfg.chroma_get_limit,
-        )
-        metas = cast(List[Dict[str, Any]], res.get("metadatas") or [])
-        return metas
+    # =============================================================
+    # Detección inteligente de filtros desde query
+    # =============================================================
+    def _extract_filters_from_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """Extrae filtros de metadata desde la query en lenguaje natural.
+        
+        Ejemplos:
+        - "tareas pendientes" → {"status": "to_do"}
+        - "tareas bloqueadas" → {"is_blocked": True}
+        - "tareas del Sprint 1" → {"sprint": "Sprint 1"}
+        - "tareas urgentes" → {"priority": "urgent"}
+        - "tareas completadas Sprint 1" → {"$and": [{"status": "done"}, {"sprint": "Sprint 1"}]}
+        """
+        query_lower = query.lower()
+        filters: Dict[str, Any] = {}
+        
+        # Detectar estados
+        if "pendiente" in query_lower or "por hacer" in query_lower:
+            filters["status"] = "to_do"
+        elif "en progreso" in query_lower or "trabajando" in query_lower:
+            filters["status"] = "in_progress"
+        elif "qa" in query_lower or "testing" in query_lower or "prueba" in query_lower:
+            filters["status"] = "qa"
+        elif "review" in query_lower or "revisión" in query_lower or "revision" in query_lower:
+            filters["status"] = "review"
+        elif "completada" in query_lower or "finalizada" in query_lower or "hecha" in query_lower:
+            filters["status"] = "done"
+        elif "cancelada" in query_lower:
+            filters["status"] = "cancelled"
+        
+        # Detectar flags (se manejarán con post-filtrado)
+        if "bloqueada" in query_lower or "bloqueado" in query_lower:
+            filters["is_blocked"] = True
+        
+        # Detectar sprint
+        sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
+        if sprint_match:
+            filters["sprint"] = f"Sprint {sprint_match.group(1)}"
+        
+        # Detectar prioridad
+        if "urgente" in query_lower:
+            filters["priority"] = "urgent"
+        elif "alta prioridad" in query_lower or "prioridad alta" in query_lower:
+            filters["priority"] = "high"
+        elif "baja prioridad" in query_lower or "prioridad baja" in query_lower:
+            filters["priority"] = "low"
+        
+        # Si hay múltiples filtros NO BOOLEANOS, usar sintaxis $and de ChromaDB
+        non_boolean_filters = {k: v for k, v in filters.items() if k != "is_blocked"}
+        if len(non_boolean_filters) > 1:
+            conditions = [{k: v} for k, v in non_boolean_filters.items()]
+            result = {"$and": conditions}
+            # Agregar is_blocked si estaba
+            if "is_blocked" in filters:
+                result["is_blocked"] = filters["is_blocked"]
+            return result
+        
+        return filters if filters else None
 
-    # -------------------------
-    # Agregaciones deterministas
-    # -------------------------
-    def count_total(self) -> int:
-        return len(self._get_all_metas())
-
-    def list_projects(self) -> List[str]:
-        projects = sorted({(m.get("project") or "unknown") for m in self._get_all_metas()})
-        return projects
-
-    def list_sprints(self) -> List[str]:
-        sprints = sorted({(m.get("sprint") or "Sin sprint") for m in self._get_all_metas()})
-        return sprints
-
-    def count_by_project(self, project_query: str) -> int:
-        metas = self._get_all_metas()
-        projects_norm = [self._norm(p) for p in self.list_projects()]
-        canonical = self._closest(self._norm(project_query), projects_norm)
-        return sum(1 for m in metas if self._norm(m.get("project")) == canonical)
-
-    def count_by_sprint(self, sprint_query: str) -> int:
-        metas = self._get_all_metas()
-        sprints_norm = [self._norm(s) for s in self.list_sprints()]
-        canonical = self._closest(self._norm(sprint_query), sprints_norm)
-        return sum(1 for m in metas if self._norm(m.get("sprint")) == canonical)
-
-    def count_assigned_to(self, person_query: str) -> int:
-        metas = self._get_all_metas()
-        target = self._norm(person_query)
-
-        def has_person(val: Optional[str]) -> bool:
-            names = [self._norm(x) for x in self._split_assignees(val)]
-            return any(target and (target in n) for n in names)
-
-        return sum(1 for m in metas if has_person(m.get("assignees")))
-
-    def count_blocked(self) -> int:
-        return sum(1 for m in self._get_all_metas() if bool(m.get("is_blocked")))
-
-    def stats_by_project(self, project_query: Optional[str] = None) -> Dict[str, int]:
-        metas = self._get_all_metas()
-        if project_query:
-            projects_norm = [self._norm(p) for p in self.list_projects()]
-            canonical = self._closest(self._norm(project_query), projects_norm)
-            metas = [m for m in metas if self._norm(m.get("project")) == canonical]
-
-        agg = {"done": 0, "in_progress": 0, "to_do": 0, "blocked": 0, "cancelled": 0, "unknown": 0, "custom": 0}
-        for m in metas:
-            s = self._norm(m.get("status"))
-            agg[s if s in agg else "custom"] += 1
-        agg["total"] = len(metas)
-        return agg
-
-    # -------------------------
-    # Generación (opcional)
-    # -------------------------
-    def _gen(self, system_msg: str, user_msg: str) -> str:
-        if not self._openai_enabled or not self.llm:
-            return "ℹ️ Generación deshabilitada (no se encontró OPENAI_API_KEY)."
-        resp = self.llm.chat.completions.create(
-            model=self.cfg.openai_model,
-            messages=[{"role": "system", "content": system_msg},
-                      {"role": "user", "content": user_msg}],
-            temperature=self.cfg.temperature,
-        )
+    # =============================================================
+    # Generador con GPT-4o-mini
+    # =============================================================
+    def answer(self, query: str, top_k: int = 6, temperature: float = 0.4, use_filters: bool = True) -> str:
+        """Genera respuesta contextualizada con GPT-4o-mini usando prompts profesionales.
+        
+        Args:
+            query: Pregunta del usuario
+            top_k: Número de documentos a recuperar
+            temperature: Temperatura del LLM (0-1)
+            use_filters: Si True, extrae filtros de la query automáticamente
+        """
         try:
-            return (resp.choices[0].message.content or "").strip()
-        except Exception:
-            return "No se obtuvo contenido del modelo."
+            docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
+            if not docs:
+                return (
+                    "No he encontrado tareas relevantes para esa consulta en el índice. "
+                    "Puedes pedir que busque en todo el proyecto, en otro sprint, "
+                    "o ejecutar el pipeline de indexado si los datos están desactualizados."
+                )
 
-    # -------------------------
-    # Router de intents
-    # -------------------------
-    def answer(self, query: str, top_k: int = 8) -> str:
-        ql = self._norm(query)
+            # Contexto enriquecido con todos los campos relevantes
+            context_parts = []
+            for m in metas[:top_k]:
+                status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
+                blocked = "⚠️ BLOQUEADA" if m.get('is_blocked') else ""
+                context_parts.append(
+                    f"• {m.get('name', 'sin nombre')} - {status_spanish} {blocked}\n"
+                    f"  Sprint: {m.get('sprint', 'N/A')} | Prioridad: {m.get('priority', 'sin prioridad')}\n"
+                    f"  Asignado: {m.get('assignees', 'sin asignar')}"
+                )
+            
+            context = "\n\n".join(context_parts)
 
-        # Preguntas de conteo
-        if any(w in ql for w in ["cuántas", "cuantas", "número", "numero", "total", "cuenta", "cuente", "cuántos", "cuantos"]):
-            try:
-                if "bloquead" in ql:
-                    return f"Hay {self.count_blocked()} tareas bloqueadas."
+            # Usar prompts profesionales (basados en prompts.py)
+            system_prompt = (
+                "Eres un asistente experto en Scrum/Agile y en la gestión de tareas (ClickUp). "
+                "Responde de forma concisa, evita la jerga innecesaria y no inventes información "
+                "que no esté en el contexto proporcionado. "
+                "Cuando la información sea incompleta, indícalo claramente y sugiere pasos para obtenerla. "
+                "Prioriza acciones prácticas y asignables (quién debe hacer qué)."
+            )
 
-                m = re.search(r"sprint\s+(\d+)", ql)
-                if m:
-                    sprint_name = f"sprint {m.group(1)}".lower()
-                    return f"En Sprint {m.group(1)} hay {self.count_by_sprint(sprint_name)} tareas."
+            user_prompt = (
+                f"He identificado fragmentos relevantes en las tareas del proyecto. "
+                f"Usa sólo la información dentro del contexto para responder la pregunta.\n\n"
+                f"Contexto:\n{context}\n\n"
+                f"Pregunta: {query}\n\n"
+                f"Proporciona una única respuesta clara y directa en un solo párrafo (sin encabezados ni numeración).\n\n"
+                f"Si hay acciones recomendadas, precede la lista con la línea exacta 'Acciones recomendadas:' "
+                f"(sin comillas) y usa viñetas '- '. Para cada acción incluye: responsable (owner) "
+                f"y prioridad (alta/media/baja). No uses numeración.\n\n"
+                f"Si NO hay acciones recomendadas, no añadas ese encabezado.\n\n"
+                f"Si alguna información no está disponible en el contexto, indícalo explícitamente y evita adivinar."
+            )
 
-                if "jorge" in ql:
-                    return f"Jorge tiene {self.count_assigned_to('Jorge Aguadero')} tareas asignadas."
-                if "laura" in ql:
-                    return f"Laura tiene {self.count_assigned_to('Laura Pérez Lopez')} tareas asignadas."
+            llm = self._ensure_llm()
+            completion = llm.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+            )
 
-                if "proyecto" in ql or any(self._norm(p) in ql for p in self.list_projects()):
-                    candidates = self.list_projects()
-                    chosen: Optional[str] = None
-                    for p in candidates:
-                        if self._norm(p) in ql:
-                            chosen = p
-                            break
-                    if not chosen:
-                        words = [w for w in re.split(r"\W+", ql) if w]
-                        rev = {self._norm(x): x for x in candidates}
-                        if words:
-                            chosen_norm = self._closest(self._norm(words[-1]), list(rev.keys()))
-                            chosen = rev.get(chosen_norm, "Folder")
-                        else:
-                            chosen = "Folder"
-                    count = self.count_by_project(chosen)
-                    return f"En el proyecto {chosen} hay {count} tareas."
+            content = completion.choices[0].message.content
+            return content.strip() if content else "No se pudo generar respuesta."
 
-                return f"En total hay {self.count_total()} tareas."
-            except Exception as e:
-                return f"❌ No pude calcular el conteo: {e}"
-
-        # RAG clásico
-        docs, metas = self.search(query, top_k=top_k)
-        if not metas:
-            return "No encontré información relevante para esa consulta."
-
-        context = "\n".join([
-            f"- {m.get('name','(sin nombre)')} "
-            f"(estado: {m.get('status','?')}, prioridad: {m.get('priority','?')}, "
-            f"sprint: {m.get('sprint','?')}, asignado: {m.get('assignees','Sin asignar')})"
-            for m in metas[:6]
-        ])
-
-        system_prompt = (
-            "Eres un asistente experto en gestión ágil (Scrum/Kanban). "
-            "Usa el contexto de tareas de ClickUp y responde breve, claro y accionable."
-        )
-        user_prompt = f"Pregunta: {query}\n\nContexto:\n{context}\n\nResponde como Scrum Master."
-
-        return self._gen(system_prompt, user_prompt)
-
-    # -------------------------
-    # Debug
-    # -------------------------
-    def debug_sample(self, k: int = 5) -> List[Dict[str, Any]]:
-        return self._get_all_metas()[:k]
-
-
-if __name__ == "__main__":
-    cfg = HybridConfig(
-        collection_name=os.getenv("CHROMA_COLLECTION", "clickup_tasks"),
-        db_path=os.getenv("CHROMA_DB_PATH", "data/rag/chroma_db"),
-    )
-    hs = HybridSearch(cfg)
-    print(hs.answer("¿Cuántas tareas hay en total?"))
-    print(hs.answer("¿Cuántas tareas hay en el proyecto Flder?"))
-    print(hs.answer("¿Cuántas tareas hay en el Sprint 3?"))
-    print(hs.answer("¿Cuántas tareas tiene Jorge?"))
-    print(hs.answer("¿Qué tareas urgentes tengo este sprint?"))
+        except Exception as e:
+            print(f"⚠️ Error en HybridSearch.answer(): {e}")
+            return f"❌ No se pudo generar la respuesta: {e}"

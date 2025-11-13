@@ -34,6 +34,7 @@ pyyaml>=6.0.2
 nltk==3.9.1
 langchain-text-splitters==0.3.6
 regex>=2024.5.15
+markdownify==0.13.1       # Conversión HTML→Markdown
 
 # 🔹 Indexación y búsqueda híbrida
 chromadb==0.5.5

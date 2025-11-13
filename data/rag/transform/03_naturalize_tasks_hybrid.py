@@ -36,20 +36,25 @@ OUTPUT_JSONL = Path("data/processed/task_natural.jsonl")
 load_dotenv()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 N_FLUSH = 10         # escribir cada N items
-MAX_SENTENCES = 2    # máximo 2 frases
+MAX_SENTENCES = 3    # máximo 3 frases (para preservar comentarios/subtareas)
 MAX_CHARS = 600      # recorte duro de seguridad
 MAX_RETRIES = 3
 
 SYSTEM_PROMPT = (
     "Eres un asistente experto en Scrum/Agile y gestión de tareas (ClickUp). "
     "Devuelve un resumen breve en español, fiel al texto. "
+    "PRESERVA SIEMPRE información crítica de Project Management: bloqueos mencionados en comentarios, "
+    "número de subtareas y su estado, y asignados. "
     "No inventes datos. Sin viñetas ni listas."
 )
 
 USER_TEMPLATE = (
-    "Convierte esta ficha de tarea (markdown) a un resumen NATURAL de máximo dos frases, "
-    "incluyendo: título breve, estado, prioridad, sprint, asignado y si hay bloqueos/dudas. "
-    "No uses emojis ni viñetas. Solo texto corrido.\n\n"
+    "Convierte esta ficha de tarea (markdown) a un resumen NATURAL de máximo tres frases, "
+    "PRESERVANDO información crítica de Project Management: "
+    "1) Si hay sección **Comentarios**, CITA TEXTUALMENTE el contenido del comentario más reciente (razón del bloqueo/duda). "
+    "2) Si hay sección **Subtareas**, MENCIONA el número exacto y estados (ej: '2 de 5 completadas'). "
+    "3) Incluye: título, estado, prioridad, sprint, asignado. "
+    "No uses emojis ni viñetas. Solo texto corrido en español.\n\n"
     "Markdown:\n{markdown}"
 )
 

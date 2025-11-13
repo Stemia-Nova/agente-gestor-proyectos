@@ -22,7 +22,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from tqdm import tqdm
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 # =============================================================
 # 📂 Paths
@@ -33,20 +33,23 @@ OUTPUT_FILE = Path("data/processed/task_chunks.jsonl")
 # =============================================================
 # ⚙️ Configuración del splitter
 # =============================================================
-# 🔧 Ajustes recomendados:
-# Para dataset DEMO (resúmenes cortos):
-#   chunk_size = 600, chunk_overlap = 100
-#
-# Para dataset REAL (tareas ClickUp con descripción + comentarios largos):
-#   chunk_size = 700–1000, chunk_overlap = 100–150
-#   → generará 2–4 chunks por tarea aproximadamente.
-#
-# *chunk_size* controla la longitud máxima de cada fragmento.
-# *chunk_overlap* define cuánto texto se solapa entre fragmentos consecutivos.
-# A mayor overlap → más coherencia contextual (pero más coste en embeddings).
+# 🔧 MarkdownHeaderTextSplitter: respeta la jerarquía de encabezados MD
+# Divide por secciones (###) preservando el contexto estructural.
+# Luego aplica RecursiveCharacterTextSplitter solo si un chunk es muy largo.
 
+headers_to_split_on = [
+    ("###", "Header 3"),
+    ("**", "Bold"),
+]
+
+markdown_splitter = MarkdownHeaderTextSplitter(
+    headers_to_split_on=headers_to_split_on,
+    strip_headers=False  # Mantener encabezados para contexto
+)
+
+# Splitter secundario para fragmentos muy largos
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=600,       # ← Cambiar aquí para producción si hay textos largos
+    chunk_size=800,
     chunk_overlap=100,
     length_function=len,
     separators=["\n\n", ". ", "; ", ": ", "\n", " "],
@@ -87,21 +90,24 @@ with OUTPUT_FILE.open("w", encoding="utf-8") as out:
         if not text:
             continue
 
-        # 🧠 Enriquecer texto con contexto semántico (ayuda al embedding)
-        assignees = meta.get("assignees", "sin asignar")
-        status = meta.get("status", "sin estado")
-        priority = meta.get("priority", "sin prioridad")
-        sprint = meta.get("sprint", "Desconocido")
-        project = meta.get("project", "Desconocido")
-
-        enriched_text = (
-            f"Tarea asignada a {assignees}. Estado: {status}. "
-            f"Prioridad: {priority}. Sprint: {sprint}. Proyecto: {project}. "
-            f"{text}"
-        ).strip()
-
-        # ✂️ Dividir texto en fragmentos manejables
-        chunks = text_splitter.split_text(enriched_text)
+        # ✂️ Dividir usando MarkdownSplitter (respeta estructura)
+        try:
+            # Primero intentar dividir por encabezados Markdown
+            md_chunks = markdown_splitter.split_text(text)
+            
+            # Si algún chunk es muy largo, aplicar splitter secundario
+            chunks = []
+            for chunk_doc in md_chunks:
+                chunk_text = chunk_doc.page_content if hasattr(chunk_doc, 'page_content') else str(chunk_doc)
+                if len(chunk_text) > 800:
+                    # Dividir chunk largo
+                    sub_chunks = text_splitter.split_text(chunk_text)
+                    chunks.extend(sub_chunks)
+                else:
+                    chunks.append(chunk_text)
+        except Exception as e:
+            # Fallback a splitter clásico si falla MD splitter
+            chunks = text_splitter.split_text(text)
         chunk_count = len(chunks)
         total_chunks += chunk_count
 

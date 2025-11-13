@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from tqdm import tqdm
 
+try:
+    from markdownify import markdownify as md
+    HAS_MARKDOWNIFY = True
+except ImportError:
+    HAS_MARKDOWNIFY = False
+    print("⚠️ markdownify no instalado. Instala con: pip install markdownify")
+
 INPUT_PATH = Path("data/processed/task_clean.jsonl")
 OUTPUT_PATH = Path("data/processed/task_markdown.jsonl")
 
@@ -38,6 +45,33 @@ def safe_str(x: Any, default: str = "") -> str:
 def safe_cap(x: Any, default: str = "") -> str:
     s = safe_str(x, default=default).strip()
     return s.capitalize() if s else default
+
+
+def html_to_markdown(text: str) -> str:
+    """
+    Convierte HTML/RichText a Markdown preservando estructura.
+    Si no hay markdownify, hace limpieza básica de tags HTML.
+    """
+    if not text or not text.strip():
+        return ""
+    
+    # Detectar si parece HTML
+    if not ("<" in text and ">" in text):
+        return text.strip()
+    
+    if HAS_MARKDOWNIFY:
+        try:
+            # Convertir HTML a Markdown limpio
+            return md(text, heading_style="ATX", strip=["script", "style"]).strip()
+        except Exception as e:
+            print(f"⚠️ Error en markdownify: {e}")
+    
+    # Fallback: limpieza básica de tags
+    import re
+    text = re.sub(r"<br\s*/?>|</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def normalize_priority(raw: Optional[str]) -> str:
@@ -129,6 +163,10 @@ def render_tags(tags: Union[List[str], List[Dict], str, None]) -> str:
 
 
 def render_comments(comments: Union[str, List, None]) -> str:
+    """
+    Renderiza comentarios en formato Markdown legible.
+    IMPORTANTE para PM: Los comentarios contienen info crítica sobre bloqueos y dudas.
+    """
     if not comments:
         return ""
     if isinstance(comments, list):
@@ -136,8 +174,13 @@ def render_comments(comments: Union[str, List, None]) -> str:
         for c in comments:
             if isinstance(c, dict):
                 author = c.get("author") or c.get("user") or ""
-                text = c.get("text") or c.get("comment") or ""
-                lines.append(f"- {safe_str(author)}: {safe_str(text)}")
+                text = c.get("text") or c.get("comment_text") or c.get("comment") or ""
+                date = c.get("date", "")
+                resolved = c.get("resolved", False)
+                status_marker = "✓" if resolved else "○"
+                
+                if text:
+                    lines.append(f"- [{status_marker}] **{safe_str(author)}**: {safe_str(text)}")
             else:
                 lines.append(f"- {safe_str(c)}")
         body = "\n".join(lines)
@@ -145,10 +188,14 @@ def render_comments(comments: Union[str, List, None]) -> str:
         body = safe_str(comments)
 
     body = body.strip()
-    return f"\n**Comentarios:**\n{body}" if body else ""
+    return f"\n\n**Comentarios ({len(lines) if isinstance(comments, list) else '?'}):**\n{body}" if body else ""
 
 
 def render_subtasks(subtasks: Union[List, None]) -> str:
+    """
+    Renderiza subtareas en formato Markdown.
+    IMPORTANTE para PM: Las subtareas muestran la descomposición del trabajo.
+    """
     if not subtasks:
         return ""
     lines = []
@@ -158,9 +205,13 @@ def render_subtasks(subtasks: Union[List, None]) -> str:
             continue
         st_status = safe_cap(st.get("status", "pendiente"))
         st_name = safe_str(st.get("name", ""))
+        st_assignees = st.get("assignees", [])
+        assignees_str = ", ".join(st_assignees) if st_assignees else "sin asignar"
+        
         if st_name:
-            lines.append(f"- [{st_status}] {st_name}")
-    return ("\n**Subtareas:**\n" + "\n".join(lines)) if lines else ""
+            lines.append(f"- [{st_status}] {st_name} (asignado: {assignees_str})")
+    
+    return (f"\n\n**Subtareas ({len(lines)}):**\n" + "\n".join(lines)) if lines else ""
 
 
 # -----------------------------
@@ -191,15 +242,14 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
     """Convierte una tarea limpia en texto markdown sin símbolos ni emojis, de forma robusta."""
     # Campos base con tolerancia
     name = safe_str(task.get("name") or task.get("title") or "Sin título")
-    status_norm = normalize_status(task.get("status"))
-    status_md = safe_cap(status_norm, default="Desconocido")
-
-    # Prioridad: acepta priority_level o priority
-    raw_priority = task.get("priority_level", None)
-    if raw_priority in (None, "", "null"):
-        raw_priority = task.get("priority")
-    priority_norm = normalize_priority(raw_priority)
-    priority_md = safe_cap(priority_norm, default="Sin definir")
+    
+    # Usar campos optimizados del clean script (con fallback a versión antigua)
+    status_norm = safe_str(task.get("status") or "unknown")
+    status_display = safe_str(task.get("status_display") or task.get("estado") or safe_cap(status_norm, default="Desconocido"))
+    
+    # Prioridad con campos optimizados
+    priority_norm = safe_str(task.get("priority") or task.get("priority_level") or "unknown")
+    priority_display = safe_str(task.get("priority_display") or safe_cap(priority_norm, default="Sin definir"))
 
     sprint = safe_str(task.get("sprint") or task.get("list") or "")
     project = safe_str(task.get("project") or "")
@@ -209,7 +259,11 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
     date_created = safe_str(task.get("date_created") or task.get("created_at") or "")
     due_date = safe_str(task.get("due_date") or task.get("deadline") or "")
 
-    description = safe_str(task.get("description") or "Sin descripción disponible.").strip()
+    # Convertir HTML a Markdown si es necesario
+    raw_desc = task.get("description") or "Sin descripción disponible."
+    description = html_to_markdown(safe_str(raw_desc)).strip()
+    if not description:
+        description = "Sin descripción disponible."
 
     # Flags / indicadores
     flags: List[str] = []
@@ -232,10 +286,10 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
     comments_section = render_comments(task.get("comments"))
     subtasks_text = render_subtasks(task.get("subtasks"))
 
-    # Markdown final
+    # Markdown final con etiquetas naturales
     text_md = f"""### Tarea: {name}
-**Estado:** {status_md}
-**Prioridad:** {priority_md}
+**Estado:** {status_display}
+**Prioridad:** {priority_display}
 **Sprint:** {sprint}
 **Proyecto:** {project}
 **Asignado a:** {assignees_disp}
