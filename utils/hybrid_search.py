@@ -1,166 +1,346 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Versión Pro-ready del módulo de búsqueda híbrida.
+HybridSearch — RAG “listo para producción”
+------------------------------------------
+• Recuperación híbrida (embeddings → ChromaDB → rerank CrossEncoder)
+• Agregaciones deterministas (conteos por sprint, proyecto, asignatario, bloqueadas)
+• Normalización y tolerancia a typos
+• Generación de respuesta con GPT-4o-mini (opcional)
 
-Permite dos modos:
- - 'basic' → BM25 + MiniLM + CrossEncoder
- - 'pro'   → SPLADE + E5-base + CrossEncoder
+Requisitos (pip):
+    sentence-transformers
+    chromadb
+    torch
+    transformers
+    openai>=1.0.0
 
-Modo de uso:
-    from utils.hybrid_search import HybridSearch
-
-    hs = HybridSearch(mode="pro")
-    results = hs.semantic_search("tareas bloqueadas")
-    hs.rerank("tareas bloqueadas", results)
+Variables de entorno:
+    OPENAI_API_KEY
 """
 
-from typing import List, Dict, Any
-from pathlib import Path
-import numpy as np
-import json
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple, Optional, Sequence, cast
+import os
 import re
+import difflib
+from pathlib import Path
+
+import numpy as np
 import torch
-from tqdm import tqdm
+import torch.nn as nn
+import chromadb
+from chromadb.api.types import GetResult
 
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer, CrossEncoder
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from openai import OpenAI
 
-# SPLADE (solo si modo pro)
-from transformers import AutoTokenizer, AutoModel
+
+# =========================
+# Config
+# =========================
+@dataclass
+class HybridConfig:
+    collection_name: str = "clickup_tasks"
+    db_path: str = "data/rag/chroma_db"
+    embedder_model: str = "sentence-transformers/all-MiniLM-L12-v2"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    chroma_get_limit: int = 100_000
+    openai_model: str = "gpt-4o-mini"
+    temperature: float = 0.4
 
 
 class HybridSearch:
-    def __init__(
-        self,
-        data_path: str = "data/processed/task_chunks.jsonl",
-        mode: str = "basic",  # 'basic' o 'pro'
-        embedding_model_basic: str = "sentence-transformers/all-MiniLM-L12-v2",
-        embedding_model_pro: str = "intfloat/e5-base-v2",
-        splade_model: str = "naver/efficient-splade-V-large-doc",
-        rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    ):
-        self.mode = mode
-        self.data_path = Path(data_path)
-        self.device = device
-        self._token_re = re.compile(r"\w+", re.UNICODE)
+    """Motor de búsqueda híbrida + agregaciones deterministas + generación LLM."""
 
-        print(f"🚀 Inicializando HybridSearch en modo '{mode}' ({device})")
+    def __init__(self, cfg: Optional[HybridConfig] = None) -> None:
+        self.cfg = cfg or HybridConfig()
 
-        # --- Cargar datos ---
-        self.chunks = self._load_chunks()
-        self.docs = [c["text"] for c in self.chunks]
-        self.metadatas = [c["metadata"] for c in self.chunks]
+        # Chroma persistente
+        self.client = chromadb.PersistentClient(path=self.cfg.db_path)
+        self.collection = self.client.get_or_create_collection(self.cfg.collection_name)
+        print(f"✅ HybridSearch conectado a '{self.cfg.collection_name}' en '{self.cfg.db_path}'")
 
-        # --- Modelos ---
-        if self.mode == "pro":
-            print("🧠 Cargando modelo de embeddings (E5-base)...")
-            self.embedding_model = SentenceTransformer(embedding_model_pro, device=device)
-            print("🧩 Cargando modelo SPLADE para búsqueda lexical...")
-            self.splade_tokenizer = AutoTokenizer.from_pretrained(splade_model)
-            self.splade_model = AutoModel.from_pretrained(splade_model).to(device)
-        else:
-            print("🧠 Cargando modelo de embeddings (MiniLM)...")
-            self.embedding_model = SentenceTransformer(embedding_model_basic, device=device)
-            print("🔤 Construyendo índice BM25...")
-            tokenized_docs = [self._tokenize(d) for d in self.docs]
-            self.bm25 = BM25Okapi(tokenized_docs)
+        # Lazy loading de modelos
+        self._embedder: Optional[SentenceTransformer] = None
+        self._rerank_tok: Optional[PreTrainedTokenizerBase] = None
+        self._rerank_model: Optional[nn.Module] = None  # nn.Module expone .eval()
 
-        print("⚖️ Cargando modelo de re-ranking...")
-        self.rerank_model = CrossEncoder(rerank_model, device=device)
+        # OpenAI (opcional)
+        self._openai_enabled = bool(os.getenv("OPENAI_API_KEY"))
+        self.llm = OpenAI() if self._openai_enabled else None
 
-        # --- Generar embeddings semánticos ---
-        print("🧬 Generando embeddings de documentos...")
-        self.embeddings = self.embedding_model.encode(
-            self.docs, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True
+        # Device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # -------------------------
+    # Helpers
+    # -------------------------
+    @staticmethod
+    def _norm(s: Optional[str]) -> str:
+        # Seguro frente a None
+        if s is None:
+            return ""
+        return s.strip().lower()
+
+    @staticmethod
+    def _split_assignees(s: Optional[str]) -> List[str]:
+        if not s:
+            return []
+        return [p.strip() for p in s.split(",") if p.strip()]
+
+    @staticmethod
+    def _closest(candidate: str, options: List[str], cutoff: float = 0.8) -> str:
+        if not candidate or not options:
+            return candidate
+        matches = difflib.get_close_matches(candidate, options, n=1, cutoff=cutoff)
+        return matches[0] if matches else candidate
+
+    # -------------------------
+    # Modelos
+    # -------------------------
+    def _ensure_embedder(self) -> SentenceTransformer:
+        if self._embedder is None:
+            print("🧠 Cargando modelo de embeddings…")
+            self._embedder = SentenceTransformer(self.cfg.embedder_model)
+        return self._embedder
+
+    def _ensure_reranker(self) -> Tuple[PreTrainedTokenizerBase, nn.Module]:
+        if self._rerank_tok is None or self._rerank_model is None:
+            print("🧩 Cargando modelo de reranking…")
+            # Tipos concretos, pero anotados con base classes para Pylance
+            tok: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(self.cfg.reranker_model)  # type: ignore[assignment]
+            model: nn.Module = AutoModelForSequenceClassification.from_pretrained(
+                self.cfg.reranker_model
+            ).to(self.device)  # type: ignore[assignment]
+            model.eval()  # nn.Module expone eval() para Pylance
+            self._rerank_tok = tok
+            self._rerank_model = model
+        return self._rerank_tok, self._rerank_model  # type: ignore[return-value]
+
+    # -------------------------
+    # Búsqueda
+    # -------------------------
+    def _embed_query(self, text: str) -> List[float]:
+        emb = self._ensure_embedder().encode(text, convert_to_numpy=True)
+        return emb.astype(np.float32).tolist()
+
+    def search(self, query: str, top_k: int = 8) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Embeddings → Chroma → rerank CrossEncoder."""
+        q_emb = self._embed_query(query)
+        res = self.collection.query(
+            query_embeddings=[q_emb],
+            n_results=top_k,
+            include=cast(Any, ["documents", "metadatas"]),  # stubs estrictos en Chroma
         )
 
-    # =========================================================
-    # UTILIDADES INTERNAS
-    # =========================================================
-    def _load_chunks(self) -> List[Dict[str, Any]]:
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"No se encontró {self.data_path}")
-        with open(self.data_path, "r", encoding="utf-8") as f:
-            return [json.loads(line) for line in f]
+        raw_docs = res.get("documents")
+        raw_metas = res.get("metadatas")
 
-    def _tokenize(self, text: str) -> List[str]:
-        return [t.lower() for t in self._token_re.findall(text or "")]
+        # Defaults seguros para evitar “Object of type None is not subscriptable”
+        docs_list: List[List[str]] = cast(List[List[str]], raw_docs or [[]])
+        metas_list: List[List[Dict[str, Any]]] = cast(List[List[Dict[str, Any]]], raw_metas or [[]])
 
-    # =========================================================
-    # BÚSQUEDA LEXICAL (BM25 o SPLADE)
-    # =========================================================
-    def keyword_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Búsqueda lexical según el modo."""
-        print(f"\n🔤 Búsqueda lexical para: '{query}'")
+        docs: List[str] = docs_list[0] if docs_list else []
+        metas: List[Dict[str, Any]] = metas_list[0] if metas_list else []
 
-        if self.mode == "pro":
-            return self._splade_search(query, top_k)
-        else:
-            return self._bm25_search(query, top_k)
+        if not docs or not metas:
+            return [], []
 
-    def _bm25_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        tokenized_query = self._tokenize(query)
-        scores = self.bm25.get_scores(tokenized_query)
-        top_idx = np.argsort(scores)[::-1][:top_k]
-        return [{"text": self.docs[i], "score": float(scores[i]), "metadata": self.metadatas[i]} for i in top_idx]
+        return self._rerank(query, docs, metas)
 
-    def _splade_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Búsqueda lexical con modelo SPLADE (sparse retriever)."""
-        self.splade_model.eval()
+    def _rerank(
+        self,
+        query: str,
+        docs: Sequence[str],
+        metas: Sequence[Dict[str, Any]],
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        tok, model = self._ensure_reranker()
+
+        pairs = [(query, d) for d in docs]
+        enc = tok(
+            [p[0] for p in pairs],
+            [p[1] for p in pairs],
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        ).to(self.device)
+
         with torch.no_grad():
-            inputs = self.splade_tokenizer(self.docs, padding=True, truncation=True, return_tensors="pt").to(self.device)
-            doc_embs = self.splade_model(**inputs).last_hidden_state.mean(dim=1)
-            q_inputs = self.splade_tokenizer(query, return_tensors="pt").to(self.device)
-            q_emb = self.splade_model(**q_inputs).last_hidden_state.mean(dim=1)
-            sim = torch.nn.functional.cosine_similarity(q_emb, doc_embs)
-            top_idx = torch.topk(sim, k=min(top_k, len(self.docs))).indices.cpu().numpy()
+            outputs = model(**enc)  # nn.Module es “callable”
+            # logits: [batch, 1] → squeeze para [batch]
+            scores = cast(torch.Tensor, outputs.logits).squeeze(-1)
 
-        return [{"text": self.docs[i], "score": float(sim[i]), "metadata": self.metadatas[i]} for i in top_idx]
+        idxs = torch.argsort(scores, descending=True).tolist()
+        # Ensure types match the declared return type: List[str], List[Dict[str, Any]]
+        reranked_docs = [str(docs[i]) for i in idxs]
+        reranked_metas = [cast(Dict[str, Any], metas[i]) for i in idxs]
+        return reranked_docs, reranked_metas
 
-    # =========================================================
-    # BÚSQUEDA SEMÁNTICA (EMBEDDINGS)
-    # =========================================================
-    def semantic_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Búsqueda semántica basada en embeddings (MiniLM o E5-base)."""
-        query_emb = self.embedding_model.encode([query], normalize_embeddings=True)
-        sim = cosine_similarity(query_emb, self.embeddings)[0]
-        top_idx = np.argsort(sim)[::-1][:top_k]
-        results = [{"text": self.docs[i], "score": float(sim[i]), "metadata": self.metadatas[i]} for i in top_idx]
-        print(f"\n🧠 Resultados semánticos para: '{query}'")
-        for r in results:
-            print(f" - ({r['score']:.3f}) {r['text'][:100]}...")
-        return results
+    # -------------------------
+    # Metadatos globales
+    # -------------------------
+    def _get_all_metas(self) -> List[Dict[str, Any]]:
+        res: GetResult = self.collection.get(
+            include=cast(Any, ["metadatas"]),
+            limit=self.cfg.chroma_get_limit,
+        )
+        metas = cast(List[Dict[str, Any]], res.get("metadatas") or [])
+        return metas
 
-    # =========================================================
-    # RERANKING (CROSS-ENCODER)
-    # =========================================================
-    def rerank(self, query: str, results: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
-        """Reordena resultados con CrossEncoder."""
-        if not results:
-            print("⚠️ No hay resultados para re-rankear.")
-            return []
+    # -------------------------
+    # Agregaciones deterministas
+    # -------------------------
+    def count_total(self) -> int:
+        return len(self._get_all_metas())
 
-        pairs = [[query, r["text"]] for r in results]
-        scores = self.rerank_model.predict(pairs)
-        for i, s in enumerate(scores):
-            results[i]["rerank_score"] = float(s)
-        ranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+    def list_projects(self) -> List[str]:
+        projects = sorted({(m.get("project") or "unknown") for m in self._get_all_metas()})
+        return projects
 
-        print(f"\n⚖️ Resultados re-rankeados para: '{query}'")
-        for r in ranked:
-            print(f" - ({r['rerank_score']:.3f}) {r['text'][:100]}...")
-        return ranked
+    def list_sprints(self) -> List[str]:
+        sprints = sorted({(m.get("sprint") or "Sin sprint") for m in self._get_all_metas()})
+        return sprints
 
-    # =========================================================
-    # ALIAS DE COMPATIBILIDAD
-    # =========================================================
-    def search_semantic(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Alias para semantic_search(), pensado para compatibilidad con tests o integraciones
-        donde se espera un método 'search_semantic'.
-        """
-        return self.semantic_search(query, top_k)
+    def count_by_project(self, project_query: str) -> int:
+        metas = self._get_all_metas()
+        projects_norm = [self._norm(p) for p in self.list_projects()]
+        canonical = self._closest(self._norm(project_query), projects_norm)
+        return sum(1 for m in metas if self._norm(m.get("project")) == canonical)
+
+    def count_by_sprint(self, sprint_query: str) -> int:
+        metas = self._get_all_metas()
+        sprints_norm = [self._norm(s) for s in self.list_sprints()]
+        canonical = self._closest(self._norm(sprint_query), sprints_norm)
+        return sum(1 for m in metas if self._norm(m.get("sprint")) == canonical)
+
+    def count_assigned_to(self, person_query: str) -> int:
+        metas = self._get_all_metas()
+        target = self._norm(person_query)
+
+        def has_person(val: Optional[str]) -> bool:
+            names = [self._norm(x) for x in self._split_assignees(val)]
+            return any(target and (target in n) for n in names)
+
+        return sum(1 for m in metas if has_person(m.get("assignees")))
+
+    def count_blocked(self) -> int:
+        return sum(1 for m in self._get_all_metas() if bool(m.get("is_blocked")))
+
+    def stats_by_project(self, project_query: Optional[str] = None) -> Dict[str, int]:
+        metas = self._get_all_metas()
+        if project_query:
+            projects_norm = [self._norm(p) for p in self.list_projects()]
+            canonical = self._closest(self._norm(project_query), projects_norm)
+            metas = [m for m in metas if self._norm(m.get("project")) == canonical]
+
+        agg = {"done": 0, "in_progress": 0, "to_do": 0, "blocked": 0, "cancelled": 0, "unknown": 0, "custom": 0}
+        for m in metas:
+            s = self._norm(m.get("status"))
+            agg[s if s in agg else "custom"] += 1
+        agg["total"] = len(metas)
+        return agg
+
+    # -------------------------
+    # Generación (opcional)
+    # -------------------------
+    def _gen(self, system_msg: str, user_msg: str) -> str:
+        if not self._openai_enabled or not self.llm:
+            return "ℹ️ Generación deshabilitada (no se encontró OPENAI_API_KEY)."
+        resp = self.llm.chat.completions.create(
+            model=self.cfg.openai_model,
+            messages=[{"role": "system", "content": system_msg},
+                      {"role": "user", "content": user_msg}],
+            temperature=self.cfg.temperature,
+        )
+        try:
+            return (resp.choices[0].message.content or "").strip()
+        except Exception:
+            return "No se obtuvo contenido del modelo."
+
+    # -------------------------
+    # Router de intents
+    # -------------------------
+    def answer(self, query: str, top_k: int = 8) -> str:
+        ql = self._norm(query)
+
+        # Preguntas de conteo
+        if any(w in ql for w in ["cuántas", "cuantas", "número", "numero", "total", "cuenta", "cuente", "cuántos", "cuantos"]):
+            try:
+                if "bloquead" in ql:
+                    return f"Hay {self.count_blocked()} tareas bloqueadas."
+
+                m = re.search(r"sprint\s+(\d+)", ql)
+                if m:
+                    sprint_name = f"sprint {m.group(1)}".lower()
+                    return f"En Sprint {m.group(1)} hay {self.count_by_sprint(sprint_name)} tareas."
+
+                if "jorge" in ql:
+                    return f"Jorge tiene {self.count_assigned_to('Jorge Aguadero')} tareas asignadas."
+                if "laura" in ql:
+                    return f"Laura tiene {self.count_assigned_to('Laura Pérez Lopez')} tareas asignadas."
+
+                if "proyecto" in ql or any(self._norm(p) in ql for p in self.list_projects()):
+                    candidates = self.list_projects()
+                    chosen: Optional[str] = None
+                    for p in candidates:
+                        if self._norm(p) in ql:
+                            chosen = p
+                            break
+                    if not chosen:
+                        words = [w for w in re.split(r"\W+", ql) if w]
+                        rev = {self._norm(x): x for x in candidates}
+                        if words:
+                            chosen_norm = self._closest(self._norm(words[-1]), list(rev.keys()))
+                            chosen = rev.get(chosen_norm, "Folder")
+                        else:
+                            chosen = "Folder"
+                    count = self.count_by_project(chosen)
+                    return f"En el proyecto {chosen} hay {count} tareas."
+
+                return f"En total hay {self.count_total()} tareas."
+            except Exception as e:
+                return f"❌ No pude calcular el conteo: {e}"
+
+        # RAG clásico
+        docs, metas = self.search(query, top_k=top_k)
+        if not metas:
+            return "No encontré información relevante para esa consulta."
+
+        context = "\n".join([
+            f"- {m.get('name','(sin nombre)')} "
+            f"(estado: {m.get('status','?')}, prioridad: {m.get('priority','?')}, "
+            f"sprint: {m.get('sprint','?')}, asignado: {m.get('assignees','Sin asignar')})"
+            for m in metas[:6]
+        ])
+
+        system_prompt = (
+            "Eres un asistente experto en gestión ágil (Scrum/Kanban). "
+            "Usa el contexto de tareas de ClickUp y responde breve, claro y accionable."
+        )
+        user_prompt = f"Pregunta: {query}\n\nContexto:\n{context}\n\nResponde como Scrum Master."
+
+        return self._gen(system_prompt, user_prompt)
+
+    # -------------------------
+    # Debug
+    # -------------------------
+    def debug_sample(self, k: int = 5) -> List[Dict[str, Any]]:
+        return self._get_all_metas()[:k]
+
+
+if __name__ == "__main__":
+    cfg = HybridConfig(
+        collection_name=os.getenv("CHROMA_COLLECTION", "clickup_tasks"),
+        db_path=os.getenv("CHROMA_DB_PATH", "data/rag/chroma_db"),
+    )
+    hs = HybridSearch(cfg)
+    print(hs.answer("¿Cuántas tareas hay en total?"))
+    print(hs.answer("¿Cuántas tareas hay en el proyecto Flder?"))
+    print(hs.answer("¿Cuántas tareas hay en el Sprint 3?"))
+    print(hs.answer("¿Cuántas tareas tiene Jorge?"))
+    print(hs.answer("¿Qué tareas urgentes tengo este sprint?"))

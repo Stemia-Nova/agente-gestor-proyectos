@@ -1,0 +1,32 @@
+[
+  {
+    "id": "86c6c6mub",
+    "name": "Conseguir que nuestro ChatBot conteste a nuestras preguntas",
+    "status": "to do",
+    "priority": "normal",
+    "assignees": "Jorge Aguadero",
+    "sprint": "Sprint 3",
+    "parent_id": null,
+    "is_subtask": false,
+    "is_blocked": true,
+    "date_created": "1762348591796",
+    "date_updated": "1762348591796",
+    "markdown": "### Conseguir que nuestro ChatBot conteste a nuestras preguntas\n- Estado: to do\n- Prioridad: normal\n- Asignado a: Jorge Aguadero\n- Sprint: Sprint 3\n- Subtarea: False\n- Bloqueada: True\n",
+    "sprint_status": "actual"
+  },
+  {
+    "id": "86c6c6m4m",
+    "name": "Coger la data de ClickUp para los clean json.",
+    "status": "in progress",
+    "priority": "high",
+    "assignees": "Jorge Aguadero",
+    "sprint": "Sprint 3",
+    "parent_id": null,
+    "is_subtask": false,
+    "is_blocked": false,
+    "date_created": "1762348539999",
+    "date_updated": "1762348673592",
+    "markdown": "### Coger la data de ClickUp para los clean json.\n- Estado: in progress\n- Prioridad: high\n- Asignado a: Jorge Aguadero\n- Sprint: Sprint 3\n- Subtarea: False\n- Bloqueada: False\n",
+    "sprint_status": "actual"
+  }
+]

@@ -3,7 +3,8 @@
 
 """
 Descarga automáticamente todas las listas (Sprints) de un Folder de ClickUp
-y sus tareas, generando un JSON y un CSV listos para la etapa RAG.
+y sus tareas, incluyendo subtareas, generando un JSON y un CSV listos
+para la etapa RAG.
 
 Variables de entorno requeridas:
 CLICKUP_API_TOKEN=pk_XXXX
@@ -90,7 +91,7 @@ except requests.exceptions.RequestException as e:
     exit(1)
 
 # =============================================================
-# DESCARGA TODAS LAS TAREAS DE CADA LISTA
+# DESCARGA TODAS LAS TAREAS (Y SUBTAREAS) DE CADA LISTA
 # =============================================================
 
 all_tasks = []
@@ -98,27 +99,45 @@ all_tasks = []
 for l in lists:
     lid = l["id"]
     lname = l["name"]
-    print(f"\n📡 Descargando tareas del Sprint '{lname}' (ID: {lid}) ...")
-    url_tasks = f"https://api.clickup.com/api/v2/list/{lid}/task?archived=false&include_closed=true"
+    print(f"\n📡 Descargando tareas (y subtareas) del Sprint '{lname}' (ID: {lid}) ...")
 
+    page = 0
+    total_tasks_list = []
 
-    try:
-        response = requests.get(url_tasks, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            tasks = data.get("tasks", [])
-            print(f"✅ {len(tasks)} tareas encontradas en {lname}.")
-            for t in tasks:
-                t["sprint_name"] = lname  # agregamos contexto
-                t["sprint_id"] = lid
-            all_tasks.extend(tasks)
-        else:
-            print(f"⚠️ Error {response.status_code} al obtener tareas: {response.text}")
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error de conexión con la lista {lid}: {e}")
-        print(traceback.format_exc())
+    while True:
+        # ✅ Añadimos subtasks=true y paginación
+        url_tasks = (
+            f"https://api.clickup.com/api/v2/list/{lid}/task"
+            f"?archived=false&include_closed=true&subtasks=true&page={page}"
+        )
 
-print(f"\n📊 Total de tareas recopiladas: {len(all_tasks)}")
+        try:
+            response = requests.get(url_tasks, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                tasks = data.get("tasks", [])
+
+                if not tasks:
+                    break  # fin de la paginación
+
+                print(f"   ➕ Página {page + 1}: {len(tasks)} tareas recibidas")
+                for t in tasks:
+                    t["sprint_name"] = lname
+                    t["sprint_id"] = lid
+                total_tasks_list.extend(tasks)
+                page += 1
+            else:
+                print(f"⚠️ Error {response.status_code} al obtener tareas: {response.text}")
+                break
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error de conexión con la lista {lid}: {e}")
+            print(traceback.format_exc())
+            break
+
+    print(f"✅ {len(total_tasks_list)} tareas (incluyendo subtareas) encontradas en {lname}.")
+    all_tasks.extend(total_tasks_list)
+
+print(f"\n📊 Total de tareas recopiladas (incluyendo subtareas): {len(all_tasks)}")
 
 if not all_tasks:
     print("⚠️ No se encontraron tareas. Fin del proceso.")
@@ -163,7 +182,8 @@ if all_tasks:
         "status": sample.get("status", {}).get("status"),
         "project": sample.get("project", {}).get("name"),
         "list": sample.get("list", {}).get("name"),
-        "sprint": sample.get("sprint_name")
+        "sprint": sample.get("sprint_name"),
+        "parent": sample.get("parent")
     }, indent=2, ensure_ascii=False))
 
 print("\n✅ Proceso completado correctamente.")
