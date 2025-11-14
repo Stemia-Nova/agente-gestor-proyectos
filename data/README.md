@@ -7,6 +7,7 @@ Esta guía explica el flujo completo de transformación de datos desde ClickUp h
 ## 🎯 Objetivo del Pipeline
 
 Convertir tareas técnicas de ClickUp en un sistema RAG (Retrieval-Augmented Generation) que permite:
+
 - 🔍 Búsqueda semántica en lenguaje natural
 - 📊 Generación de métricas y reportes
 - 💬 Consultas conversacionales con contexto
@@ -50,12 +51,12 @@ ClickUp API → [1.Ingest] → [2.Clean] → [3.Markdown] → [4.Naturalize] →
 {
   "id": "86d5k8dqp",
   "name": "CREAR RAG",
-  "status": {"status": "in progress"},
-  "priority": {"priority": "high"},
-  "tags": [{"name": "bloqueada"}],
+  "status": { "status": "in progress" },
+  "priority": { "priority": "high" },
+  "tags": [{ "name": "bloqueada" }],
   "description": "Construir sistema RAG...",
   "comments": [
-    {"comment_text": "Bloqueada por falta de API key", "user": "Juan"}
+    { "comment_text": "Bloqueada por falta de API key", "user": "Juan" }
   ]
 }
 ```
@@ -124,9 +125,11 @@ ANTES:
 **Etiquetas:** bloqueada, data
 
 ## Descripción
+
 Construir sistema RAG para gestión de proyectos con ClickUp...
 
 ## Comentarios
+
 - **Juan** (2025-11-10): Bloqueada por falta de API key
 ```
 
@@ -162,10 +165,10 @@ ANTES (Markdown):
 **Descripción:** Construir sistema RAG para gestión...
 
 DESPUÉS (Natural):
-Estamos trabajando en crear un sistema RAG para gestionar proyectos. 
-Esta tarea está actualmente en progreso, asignada a Juan, y tiene 
-prioridad alta. Es importante porque permitirá hacer consultas 
-inteligentes sobre las tareas. La tarea está bloqueada esperando la 
+Estamos trabajando en crear un sistema RAG para gestionar proyectos.
+Esta tarea está actualmente en progreso, asignada a Juan, y tiene
+prioridad alta. Es importante porque permitirá hacer consultas
+inteligentes sobre las tareas. La tarea está bloqueada esperando la
 API key de OpenAI. Etiquetas: bloqueada, data.
 ```
 
@@ -254,6 +257,7 @@ make pipeline
 ```
 
 Tendrás:
+
 - ✅ **23 tareas** descargadas de ClickUp
 - ✅ **46 vectores** en ChromaDB (23 × 2 modelos)
 - ✅ **Búsqueda semántica** funcional
@@ -297,16 +301,21 @@ for meta in metas:
 ## 🐛 Troubleshooting
 
 ### Error: "OpenAI rate limit"
+
 **Solución**: Espera 30 minutos y ejecuta `make naturalize` de nuevo. El script reanudará desde donde quedó.
 
 ### Error: "ChromaDB collection not found"
+
 **Solución**: Ejecuta `make index --reset` para recrear la colección.
 
 ### Error: "ClickUp API 401 Unauthorized"
+
 **Solución**: Verifica que `CLICKUP_API_TOKEN` en `.env` sea correcto.
 
 ### Tags no se encuentran en búsqueda
+
 **Solución**: Verifica que:
+
 1. Tags estén en `task_markdown.jsonl` (sección **Etiquetas:**)
 2. Tags estén en `task_natural.jsonl` (al final del texto)
 3. Ejecutaste `make index --reset` después de los cambios

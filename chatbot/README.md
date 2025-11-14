@@ -42,13 +42,17 @@ AVATAR_ASSISTANT = "🤖"
 Maneja los eventos del ciclo de vida de Chainlit:
 
 #### `@cl.on_chat_start`
+
 Se ejecuta cuando un usuario inicia una conversación:
+
 - Inicializa `HybridSearch`
 - Muestra mensaje de bienvenida
 - Prepara contexto de sesión
 
 #### `@cl.on_message`
+
 Procesa cada mensaje del usuario:
+
 1. **Detección de intención**: Identifica si es búsqueda, informe, métricas, etc.
 2. **Búsqueda híbrida**: Recupera contexto relevante con RAG
 3. **Generación de respuesta**: Usa GPT-4 con contexto
@@ -121,13 +125,13 @@ En `handlers.py`:
 @cl.on_message
 async def handle_message(message: cl.Message):
     query = message.content.lower()
-    
+
     # Agregar detección de nuevo comando
     if "resumen semanal" in query:
         response = await generate_weekly_summary()
         await cl.Message(content=response).send()
         return
-    
+
     # ... resto del código
 ```
 
@@ -205,10 +209,10 @@ await cl.Message(
 async with cl.Step(name="Generando respuesta..."):
     msg = cl.Message(content="")
     await msg.send()
-    
+
     async for chunk in generate_streaming_response(query):
         await msg.stream_token(chunk)
-    
+
     await msg.update()
 ```
 
@@ -238,7 +242,7 @@ from chatbot.handlers import process_query
 async def test_blocked_tasks_query():
     query = "¿Qué tareas están bloqueadas?"
     response = await process_query(query)
-    
+
     assert "bloqueada" in response.lower()
     assert len(response) > 50  # Respuesta sustantiva
 ```
@@ -248,18 +252,23 @@ async def test_blocked_tasks_query():
 ## 🐛 Troubleshooting
 
 ### Error: "OpenAI API key not found"
+
 **Solución**: Verifica que `OPENAI_API_KEY` esté en `.env`
 
 ### Error: "ChromaDB collection not found"
+
 **Solución**: Ejecuta `make index` para crear la colección
 
 ### Respuestas lentas
+
 **Causas posibles**:
+
 - Primera carga de modelos (normal)
 - Embeddings en CPU (considera GPU)
 - Rate limiting de OpenAI API
 
-**Solución**: 
+**Solución**:
+
 - Usa caché para embeddings frecuentes
 - Reduce `TOP_K_RESULTS` en config
 - Considera modelos locales

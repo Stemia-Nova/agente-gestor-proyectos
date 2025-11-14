@@ -22,6 +22,7 @@ utils/
 ### Clase Principal: `HybridSearch`
 
 Sistema de búsqueda que combina:
+
 - 🧠 **Búsqueda semántica**: Similitud de embeddings
 - 📝 **Búsqueda léxica**: BM25 (keyword matching)
 - ⚖️ **Fusión híbrida**: Combina ambos resultados
@@ -30,15 +31,18 @@ Sistema de búsqueda que combina:
 ### Métodos Principales
 
 #### `__init__(db_path, collection_name)`
+
 ```python
 searcher = HybridSearch(
     db_path="data/rag/chroma_db",
     collection_name="clickup_tasks"
 )
 ```
+
 Inicializa conexión a ChromaDB y carga modelos de embeddings.
 
 #### `search(query, top_k=6, filters=None)`
+
 ```python
 documents, metadatas = searcher.search(
     query="tareas bloqueadas",
@@ -46,9 +50,11 @@ documents, metadatas = searcher.search(
     filters={"sprint": "Sprint 3"}
 )
 ```
+
 Ejecuta búsqueda híbrida con filtros opcionales.
 
 **Parámetros**:
+
 - `query`: Consulta en lenguaje natural
 - `top_k`: Número de resultados a retornar
 - `filters`: Dict con filtros de metadata
@@ -56,18 +62,22 @@ Ejecuta búsqueda híbrida con filtros opcionales.
 **Retorna**: Tuple `(documents: List[str], metadatas: List[Dict])`
 
 #### `answer(query)`
+
 ```python
 response = searcher.answer("¿Cuántas tareas pendientes hay?")
 ```
+
 Genera respuesta completa usando GPT-4 con contexto RAG.
 
 **Flujo interno**:
+
 1. Ejecuta `search()` para obtener contexto
 2. Construye prompt con contexto + query
 3. Llama a GPT-4 para generar respuesta
 4. Detecta comandos especiales (PDF, métricas)
 
 #### `get_sprint_metrics(sprint)`
+
 ```python
 metrics = searcher.get_sprint_metrics("Sprint 3")
 # Returns: {
@@ -80,6 +90,7 @@ metrics = searcher.get_sprint_metrics("Sprint 3")
 ```
 
 #### `generate_report_pdf(sprint, destinatario)`
+
 ```python
 pdf_path = searcher.generate_report_pdf(
     sprint="Sprint 3",
@@ -95,11 +106,11 @@ def hybrid_search(query, top_k=6):
     # 1. Búsqueda semántica (embeddings)
     semantic_results = vector_search(query, k=20)
     semantic_scores = [normalize(dist) for dist in results]
-    
+
     # 2. Búsqueda léxica (BM25)
     bm25_results = bm25.get_scores(query)
     bm25_scores = [normalize(score) for score in bm25_results]
-    
+
     # 3. Fusión con pesos
     final_scores = {}
     for doc_id in all_docs:
@@ -109,11 +120,11 @@ def hybrid_search(query, top_k=6):
             0.7 * semantic +  # Peso semántico
             0.3 * lexical     # Peso léxico
         )
-    
+
     # 4. Re-ranking con cross-encoder
     candidates = sorted(final_scores, key=lambda x: x[1], reverse=True)[:20]
     reranked = cross_encoder.predict([(query, doc) for doc in candidates])
-    
+
     # 5. Retornar top_k
     return sorted(reranked, key=lambda x: x.score, reverse=True)[:top_k]
 ```
@@ -144,6 +155,7 @@ Genera informes profesionales en formato PDF con ReportLab.
 ### Métodos Principales
 
 #### `generate_report(sprint, metrics, tasks)`
+
 ```python
 generator = ReportGenerator()
 report_text = generator.generate_report(
@@ -156,9 +168,11 @@ report_text = generator.generate_report(
     tasks=[...]  # Lista de tareas
 )
 ```
+
 Genera informe en formato texto (markdown).
 
 #### `export_to_pdf(sprint, output_path, destinatario)`
+
 ```python
 pdf_path = generator.export_to_pdf(
     sprint="Sprint 3",
@@ -166,7 +180,9 @@ pdf_path = generator.export_to_pdf(
     destinatario="Product Manager"
 )
 ```
+
 Genera PDF profesional con:
+
 - 📋 Portada con logo y fecha
 - 📊 Métricas resumidas en tabla
 - 📝 Listado detallado de tareas
@@ -248,7 +264,7 @@ class ClickUpConfig(BaseModel):
     priority_mappings: Dict[str, List[str]]
     critical_tags_for_comments: List[str]
     spanish_translations: Dict[str, Dict[str, str]]
-    
+
     class Config:
         extra = "allow"  # Permite campos adicionales (version, description)
 ```
@@ -256,6 +272,7 @@ class ClickUpConfig(BaseModel):
 ### Métodos Helper
 
 #### `get_normalized_status(raw_status: str) -> str`
+
 Normaliza estado de ClickUp a valor estándar.
 
 ```python
@@ -265,6 +282,7 @@ config.get_normalized_status("Complete")     # → "done"
 ```
 
 #### `get_normalized_priority(raw_priority: str) -> str`
+
 Normaliza prioridad de ClickUp a valor estándar.
 
 ```python
@@ -274,6 +292,7 @@ config.get_normalized_priority("normal")     # → "normal"
 ```
 
 #### `should_download_comments(tags: List[str]) -> bool`
+
 Determina si debe descargar comentarios según tags.
 
 ```python
@@ -316,7 +335,7 @@ config = get_config()  # ⚠️ Usa valores por defecto
 def test_semantic_search():
     searcher = HybridSearch()
     docs, metas = searcher.search("tareas urgentes", top_k=5)
-    
+
     assert len(docs) == 5
     assert any("urgent" in meta.get("priority", "") for meta in metas)
 
@@ -326,7 +345,7 @@ def test_filters():
         query="tareas",
         filters={"sprint": "Sprint 3", "status": "done"}
     )
-    
+
     assert all(m["sprint"] == "Sprint 3" for m in metas)
     assert all(m["status"] == "done" for m in metas)
 ```
@@ -341,7 +360,7 @@ def test_pdf_generation():
         sprint="Test Sprint",
         output_path="/tmp/test_report.pdf"
     )
-    
+
     assert os.path.exists(pdf_path)
     assert pdf_path.endswith(".pdf")
 ```
@@ -352,14 +371,14 @@ def test_pdf_generation():
 # test/test_config_models.py
 def test_config_validation():
     config = get_config()
-    
+
     assert isinstance(config, ClickUpConfig)
     assert "to_do" in config.status_mappings
     assert "urgent" in config.priority_mappings
 
 def test_normalization():
     config = get_config()
-    
+
     assert config.get_normalized_status("TODO") == "to_do"
     assert config.get_normalized_priority("alta") == "high"
 ```
@@ -428,18 +447,22 @@ status = config.get_normalized_status("my_custom_status")
 ## 🐛 Troubleshooting
 
 ### Error: "ChromaDB collection not found"
+
 **Causa**: No se ha ejecutado el pipeline de indexación.  
 **Solución**: `make index`
 
 ### Error: "Model not found"
+
 **Causa**: Modelos de embeddings no descargados.  
 **Solución**: Se descargan automáticamente en primer uso. Espera ~2GB.
 
 ### Búsquedas lentas
+
 **Causa**: CPU sin optimización.  
 **Solución**: Usa GPU o reduce `top_k`
 
 ### PDFs vacíos
+
 **Causa**: Sprint no existe en ChromaDB.  
 **Solución**: Verifica nombre exacto del sprint.
 

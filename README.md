@@ -27,30 +27,35 @@ Sistema de **Retrieval-Augmented Generation (RAG)** especializado en gestión de
 ## ✨ Características Principales
 
 ### 🔍 **Búsqueda Híbrida Inteligente**
+
 - **Semántica**: Embeddings con `sentence-transformers` (MiniLM + Jina)
 - **Léxica**: BM25 para búsqueda por palabras clave
 - **Re-ranking**: Cross-encoder para resultados más precisos
 - **Filtros avanzados**: Por sprint, estado, prioridad, tags, asignado
 
 ### 🧠 **Naturalización de Tareas**
+
 - Conversión automática de tareas técnicas a lenguaje natural con GPT-4
 - Sistema anti-duplicados con cache inteligente
 - Preservación de metadata crítica (tags, comentarios, bloqueadores)
 - Progress tracking con reinicio automático en caso de error
 
 ### 📊 **Informes Profesionales**
+
 - Generación de reportes de sprint en formato texto y PDF
 - Métricas avanzadas: velocidad, completitud, bloqueadores, distribución de prioridades
 - Análisis de tareas críticas con comentarios detallados
 - Formato A4 profesional con logo y estructura formal
 
 ### ⚙️ **Configuración Flexible**
+
 - Sistema de mapeos externo con **Pydantic** para validación
 - Adaptable a diferentes proyectos sin modificar código
 - Soporte multi-idioma (español/inglés)
 - Detección automática de tags críticas para descarga de comentarios
 
 ### 💬 **Chatbot Conversacional**
+
 - Interfaz web moderna con **Chainlit**
 - Respuestas contextuales basadas en RAG
 - Comandos especiales para informes y métricas
@@ -138,6 +143,7 @@ Sistema de **Retrieval-Augmented Generation (RAG)** especializado en gestión de
 - **GPU**: Opcional (mejora velocidad de embeddings)
 
 ### APIs Requeridas
+
 - **ClickUp API Token**: Para descarga de tareas
 - **OpenAI API Key**: Para naturalización y generación de respuestas
 
@@ -201,9 +207,7 @@ Edita `data/rag/config/clickup_mappings.json` para adaptar a tu proyecto:
     "urgent": ["urgent", "urgente", "1"],
     "high": ["high", "alta", "2"]
   },
-  "critical_tags_for_comments": [
-    "bloqueada", "blocked", "data", "duda"
-  ]
+  "critical_tags_for_comments": ["bloqueada", "blocked", "data", "duda"]
 }
 ```
 
@@ -265,14 +269,14 @@ Dame las tareas de alta prioridad pendientes
 
 Cada etapa del pipeline genera archivos intermedios en `data/processed/`:
 
-| Etapa | Script | Input | Output | Descripción |
-|-------|--------|-------|--------|-------------|
-| **1. Ingest** | `get_clickup_tasks.py` | ClickUp API | `clickup_tasks_all.json` | Descarga tareas y comentarios |
-| **2. Clean** | `01_clean_clickup_tasks.py` | JSON crudo | `task_clean.jsonl` | Normaliza estados/prioridades |
-| **3. Markdown** | `02_markdownfy_tasks.py` | Clean JSONL | `task_markdown.jsonl` | Convierte a formato markdown |
-| **4. Naturalize** | `03_naturalize_tasks_hybrid.py` | Markdown JSONL | `task_natural.jsonl` | Naturaliza con GPT-4 |
-| **5. Chunk** | `04_chunk_tasks.py` | Natural JSONL | `task_chunks.jsonl` | Genera chunks (1/tarea) |
-| **6. Index** | `05_index_tasks.py` | Chunks JSONL | `chroma_db/` | Indexa en ChromaDB |
+| Etapa             | Script                          | Input          | Output                   | Descripción                   |
+| ----------------- | ------------------------------- | -------------- | ------------------------ | ----------------------------- |
+| **1. Ingest**     | `get_clickup_tasks.py`          | ClickUp API    | `clickup_tasks_all.json` | Descarga tareas y comentarios |
+| **2. Clean**      | `01_clean_clickup_tasks.py`     | JSON crudo     | `task_clean.jsonl`       | Normaliza estados/prioridades |
+| **3. Markdown**   | `02_markdownfy_tasks.py`        | Clean JSONL    | `task_markdown.jsonl`    | Convierte a formato markdown  |
+| **4. Naturalize** | `03_naturalize_tasks_hybrid.py` | Markdown JSONL | `task_natural.jsonl`     | Naturaliza con GPT-4          |
+| **5. Chunk**      | `04_chunk_tasks.py`             | Natural JSONL  | `task_chunks.jsonl`      | Genera chunks (1/tarea)       |
+| **6. Index**      | `05_index_tasks.py`             | Chunks JSONL   | `chroma_db/`             | Indexa en ChromaDB            |
 
 📚 **Guía educativa completa**: [`data/README.md`](data/README.md)
 
@@ -353,7 +357,7 @@ Este proyecto está bajo la Licencia MIT.
 
 ## 👥 Autores
 
-**Stemia-Nova** - *Desarrollo inicial*
+**Stemia-Nova** - _Desarrollo inicial_
 
 ---
 
