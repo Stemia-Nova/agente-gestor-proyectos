@@ -26,9 +26,25 @@ PRIORITY_TO_SPANISH = {
     "unknown": "Sin prioridad",
 }
 
+# Mapeo de estados a español
+STATUS_TO_SPANISH = {
+    "to_do": "Pendiente",
+    "in_progress": "En Progreso",
+    "done": "Completada",
+    "qa": "En QA",
+    "review": "En Revisión",
+    "blocked": "Bloqueada",
+    "cancelled": "Cancelada",
+    "unknown": "Sin estado",
+}
+
 def translate_priority(priority: str) -> str:
     """Traduce prioridad de inglés a español."""
     return PRIORITY_TO_SPANISH.get(priority.lower() if priority else "", "Sin prioridad")
+
+def translate_status(status: str) -> str:
+    """Traduce estado de inglés a español."""
+    return STATUS_TO_SPANISH.get(status.lower() if status else "", "Sin estado")
 
 
 SPRINT_REPORT_TEMPLATE = """
@@ -179,12 +195,17 @@ class ReportGenerator:
         Returns:
             Informe formateado en texto
         """
-        # Traducir prioridades a español en todas las tareas
+        # Traducir prioridades y estados a español en todas las tareas
         for task in tasks:
             if 'priority' in task:
                 task['priority_spanish'] = translate_priority(task['priority'])
             else:
                 task['priority_spanish'] = "Sin prioridad"
+            
+            if 'status' in task:
+                task['status_spanish'] = translate_status(task['status'])
+            else:
+                task['status_spanish'] = "Sin estado"
         
         # Clasificar tareas por estado
         tareas_completadas = [t for t in tasks if t.get('status') == 'done']
@@ -223,7 +244,7 @@ class ReportGenerator:
         tasks: List[Dict[str, Any]],
         output_path: str,
         destinatario: str = "Project Manager / Scrum Master"
-    ) -> str:
+    ) -> Optional[str]:
         """
         Exporta el informe de sprint a PDF profesional.
         
@@ -235,7 +256,7 @@ class ReportGenerator:
             destinatario: A quién va dirigido
             
         Returns:
-            Mensaje de confirmación o error
+            Optional[str]: Ruta del PDF generado o None en caso de error
         """
         try:
             # Traducir prioridades a español en todas las tareas
@@ -244,6 +265,11 @@ class ReportGenerator:
                     task['priority_spanish'] = translate_priority(task['priority'])
                 else:
                     task['priority_spanish'] = "Sin prioridad"
+                
+                if 'status' in task:
+                    task['status_spanish'] = translate_status(task['status'])
+                else:
+                    task['status_spanish'] = "Sin estado"
             
             # Clasificar tareas
             tareas_completadas = [t for t in tasks if t.get('status') == 'done']
@@ -416,7 +442,9 @@ class ReportGenerator:
             # Construir PDF
             doc.build(story)
             
-            return f"✅ Informe exportado exitosamente a: {output_path}"
+            print(f"✅ Informe exportado exitosamente a: {output_path}")
+            return output_path
             
         except Exception as e:
-            return f"❌ Error al exportar PDF: {str(e)}"
+            print(f"❌ Error al exportar PDF: {str(e)}")
+            return None

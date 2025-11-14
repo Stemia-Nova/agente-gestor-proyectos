@@ -136,6 +136,7 @@ def main(reset: bool = False) -> None:
         # 🧹 Limpiar metadatos (Chroma no acepta None ni estructuras complejas)
         clean_meta: Dict[str, Any] = {}
         for k, v in (meta or {}).items():
+            # Saltar valores None
             if v is None:
                 continue
             
@@ -147,10 +148,14 @@ def main(reset: bool = False) -> None:
             elif isinstance(v, (list, dict)):
                 v = json.dumps(v, ensure_ascii=False)
             
-            # Chroma solo acepta str, int, float, bool
-            if isinstance(v, (int, float, bool)):
+            # Chroma acepta: str, int, float, bool
+            # ⚠️ IMPORTANTE: Preservar tipos bool/int/float, NO convertir todo a string
+            if isinstance(v, bool):
+                clean_meta[k] = v
+            elif isinstance(v, (int, float)):
                 clean_meta[k] = v
             else:
+                # Solo strings: limpiar whitespace
                 clean_meta[k] = str(v).strip()
 
         ids.append(cid)

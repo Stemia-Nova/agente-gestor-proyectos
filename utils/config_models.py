@@ -45,8 +45,7 @@ class ClickUpConfig(BaseModel):
         description="Traducciones al español: {'status': {'done': 'Completada'}}"
     )
     
-    class Config:
-        extra = "allow"  # Permitir campos de metadatos como version/description
+    model_config = {"extra": "allow"}  # Permitir campos de metadatos como version/description
         
     @field_validator('status_mappings', 'priority_mappings')
     @classmethod

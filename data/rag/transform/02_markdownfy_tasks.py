@@ -325,8 +325,14 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
         "has_doubts": bool(task.get("has_doubts", False)),
         "is_pending_review": bool(task.get("is_pending_review", False)),
         "is_overdue": bool(task.get("is_overdue", False)),
+        # Comentarios
         "has_comments": bool(task.get("has_comments", False)),
         "comments_count": int(task.get("comments_count") or 0),
+        "comments": task.get("comments") or [],  # Lista completa de comentarios
+        # Subtareas
+        "has_subtasks": bool(task.get("has_subtasks", False)),
+        "subtasks_count": int(task.get("subtasks_count") or 0),
+        "subtasks": task.get("subtasks") or [],  # Lista completa de subtareas
         # Extras útiles que a veces están presentes:
         "tags": task.get("tags") or [],
         "creator": creator,

@@ -27,7 +27,7 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 # =============================================================
 # 📂 Paths
 # =============================================================
-INPUT_FILE = Path("data/processed/task_natural.jsonl")
+INPUT_FILE = Path("data/processed/task_natural_merged.jsonl")
 OUTPUT_FILE = Path("data/processed/task_chunks.jsonl")
 
 # =============================================================
@@ -73,14 +73,14 @@ with INPUT_FILE.open("r", encoding="utf-8") as f:
 print(f"📂 Procesando {len(tasks)} tareas desde {INPUT_FILE} ...")
 
 # =============================================================
-# ✂️ Generación de chunks enriquecidos
+# ✂️ Generación de chunks enriquecidos (1 tarea = 1 chunk)
 # =============================================================
 OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 total_chunks = 0
 chunk_order_id = 0  # contador global incremental
 
 with OUTPUT_FILE.open("w", encoding="utf-8") as out:
-    for task in tqdm(tasks, desc="✂️ Generando chunks enriquecidos"):
+    for task in tqdm(tasks, desc="✂️ Generando chunks (1 por tarea)"):
         meta = task.get("metadata", {})
         task_id = meta.get("task_id") or f"task_{uuid.uuid4().hex[:8]}"
 
@@ -90,51 +90,31 @@ with OUTPUT_FILE.open("w", encoding="utf-8") as out:
         if not text:
             continue
 
-        # ✂️ Dividir usando MarkdownSplitter (respeta estructura)
-        try:
-            # Primero intentar dividir por encabezados Markdown
-            md_chunks = markdown_splitter.split_text(text)
-            
-            # Si algún chunk es muy largo, aplicar splitter secundario
-            chunks = []
-            for chunk_doc in md_chunks:
-                chunk_text = chunk_doc.page_content if hasattr(chunk_doc, 'page_content') else str(chunk_doc)
-                if len(chunk_text) > 800:
-                    # Dividir chunk largo
-                    sub_chunks = text_splitter.split_text(chunk_text)
-                    chunks.extend(sub_chunks)
-                else:
-                    chunks.append(chunk_text)
-        except Exception as e:
-            # Fallback a splitter clásico si falla MD splitter
-            chunks = text_splitter.split_text(text)
-        chunk_count = len(chunks)
-        total_chunks += chunk_count
+        # ✅ 1 tarea = 1 chunk (sin dividir)
+        # Esto mantiene la coherencia completa de cada tarea
+        chunk_order_id += 1
+        chunk_id = f"{task_id}_chunk0"
+        chunk_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
+        indexed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        total_chunks += 1
 
-        for i, chunk in enumerate(chunks):
-            chunk_order_id += 1
-            chunk_id = f"{task_id}_chunk{i}"
-            chunk_hash = hashlib.sha1(chunk.encode("utf-8")).hexdigest()
-            indexed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-            chunk_record = {
-                "chunk_id": chunk_id,
-                "task_id": task_id,
-                "chunk_index": i,
-                "chunk_count": chunk_count,
-                "chunk_order_id": chunk_order_id,
-                "chunk_hash": chunk_hash,
-                "indexed_at": indexed_at,
-                "text": chunk.strip(),
-                "metadata": {
-                    **meta,
-                    "chunk_uuid": uuid.uuid4().hex,
-                    "chunk_length": len(chunk),
-                },
-            }
-            out.write(json.dumps(chunk_record, ensure_ascii=False) + "\n")
+        chunk_record = {
+            "chunk_id": chunk_id,
+            "task_id": task_id,
+            "chunk_index": 0,
+            "chunk_count": 1,
+            "chunk_order_id": chunk_order_id,
+            "chunk_hash": chunk_hash,
+            "indexed_at": indexed_at,
+            "text": text,
+            "metadata": {
+                **meta,
+                "chunk_uuid": uuid.uuid4().hex,
+                "chunk_length": len(text),
+            },
+        }
+        out.write(json.dumps(chunk_record, ensure_ascii=False) + "\n")
 
 print(f"\n✅ Archivo generado en: {OUTPUT_FILE}")
-print(f"📊 Total de chunks creados: {total_chunks}")
-print("ℹ️  Consejo: si las tareas reales contienen descripciones largas, "
-      "aumenta 'chunk_size' a ~800–1000 para obtener fragmentos más coherentes.\n")
+print(f"📊 Total de chunks creados: {total_chunks} (1 chunk por tarea)")
+print(f"✅ Ratio: {len(tasks)} tareas → {total_chunks} chunks\n")

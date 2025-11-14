@@ -380,7 +380,7 @@ class HybridSearch:
         sprint: str, 
         output_path: str,
         destinatario: str = "Project Manager / Scrum Master"
-    ) -> str:
+    ) -> Optional[str]:
         """
         Genera un informe profesional del sprint en formato PDF.
         
@@ -390,7 +390,7 @@ class HybridSearch:
             destinatario: A quién va dirigido el informe
             
         Returns:
-            Mensaje de confirmación o error
+            Ruta del archivo PDF generado, o None si hubo error
         """
         try:
             logger.info(f"📄 Generando informe PDF para {sprint}...")
@@ -417,7 +417,7 @@ class HybridSearch:
             from utils.report_generator import ReportGenerator
             
             generator = ReportGenerator()
-            result_msg = generator.export_to_pdf(
+            pdf_path = generator.export_to_pdf(
                 sprint_name=sprint,
                 metrics=metrics,
                 tasks=tasks,
@@ -425,12 +425,13 @@ class HybridSearch:
                 destinatario=destinatario
             )
             
-            logger.info(f"✅ Informe PDF generado para {sprint}")
-            return result_msg
+            if pdf_path:
+                logger.info(f"✅ Informe PDF generado para {sprint}")
+            return pdf_path
             
         except Exception as e:
             logger.error(f"❌ Error generando PDF: {e}", exc_info=True)
-            return f"❌ Error al generar PDF: {str(e)}"
+            return None
 
     # =============================================================
     # Conteo y agregaciones
@@ -600,7 +601,7 @@ class HybridSearch:
                         fecha = datetime.now().strftime("%Y%m%d_%H%M")
                         pdf_path = f"data/logs/informe_{sprint.replace(' ', '_').lower()}_{fecha}.pdf"
                         result = self.generate_report_pdf(sprint, pdf_path)
-                        return result
+                        return result if result else f"❌ Error al generar PDF para {sprint}"
                     else:
                         # Generar informe en texto
                         return self.generate_report(sprint)
