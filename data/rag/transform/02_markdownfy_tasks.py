@@ -285,6 +285,10 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
     # Comentarios y subtareas
     comments_section = render_comments(task.get("comments"))
     subtasks_text = render_subtasks(task.get("subtasks"))
+    
+    # Etiquetas (tags) - CRÍTICO para búsquedas
+    tags_display = render_tags(task.get("tags"))
+    tags_section = f"\n**Etiquetas:** {tags_display}" if tags_display != "—" else ""
 
     # Markdown final con etiquetas naturales
     text_md = f"""### Tarea: {name}
@@ -295,7 +299,7 @@ def generate_markdown(task: Dict[str, Any]) -> Dict[str, Any]:
 **Asignado a:** {assignees_disp}
 **Creador:** {creator}
 **Fecha de creación:** {date_created}
-**Fecha de vencimiento:** {due_date}
+**Fecha de vencimiento:** {due_date}{tags_section}
 
 **Descripción:**
 {description}

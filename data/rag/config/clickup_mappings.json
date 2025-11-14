@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "description": "Mapeos configurables para normalización de estados de ClickUp",
+  "status_mappings": {
+    "to_do": ["to do", "todo", "open", "por hacer", "pendiente"],
+    "in_progress": ["in progress", "doing", "progress", "working", "en progreso", "trabajando"],
+    "done": ["complete", "completed", "done", "closed", "finished", "finalizado", "completado", "cerrado"],
+    "qa": ["qa", "testing", "test"],
+    "review": ["review", "revision", "revisión"],
+    "blocked": ["blocked", "bloqueado"],
+    "cancelled": ["cancelled", "canceled", "cancelado"],
+    "needs_info": ["needs info", "need info", "waiting", "esperando"]
+  },
+  "priority_mappings": {
+    "urgent": ["urgent", "urgente", "crítico", "critical", "1"],
+    "high": ["high", "alta", "alto", "2"],
+    "normal": ["normal", "medium", "media", "medio", "3"],
+    "low": ["low", "baja", "bajo", "4"]
+  },
+  "critical_tags_for_comments": [
+    "bloqueada",
+    "blocked",
+    "bloquer",
+    "data",
+    "datos",
+    "duda",
+    "pregunta",
+    "question",
+    "review",
+    "revisión"
+  ],
+  "spanish_translations": {
+    "status": {
+      "to_do": "Pendiente",
+      "in_progress": "En progreso",
+      "done": "Completada",
+      "qa": "En QA",
+      "review": "En revisión",
+      "blocked": "Bloqueada",
+      "cancelled": "Cancelada",
+      "needs_info": "Esperando información",
+      "custom": "Personalizado",
+      "unknown": "Desconocido"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baja",
+      "unknown": "Sin prioridad"
+    }
+  }
+}

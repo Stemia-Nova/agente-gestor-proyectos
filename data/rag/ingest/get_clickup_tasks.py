@@ -12,6 +12,7 @@ CLICKUP_FOLDER_ID=901511269055
 """
 
 import os
+import sys
 import requests
 import traceback
 import json
@@ -23,18 +24,26 @@ from datetime import datetime
 from collections.abc import MutableMapping
 
 # =============================================================
-# CARGA DE CONFIGURACIÓN
+# CARGA DE CONFIGURACIÓN CON PYDANTIC
 # =============================================================
 
 script_location = Path(__file__).resolve().parent
 root_dir = script_location.parent.parent.parent
 env_path = root_dir / ".env"
 
+# Agregar utils al path para importar config_models
+sys.path.insert(0, str(root_dir))
+
+from utils.config_models import get_config, ClickUpConfig
+
 print(f"🔍 Buscando archivo .env en: {env_path}")
 load_dotenv(dotenv_path=env_path)
 
 API_TOKEN = os.getenv("CLICKUP_API_TOKEN")
 FOLDER_ID = os.getenv("CLICKUP_FOLDER_ID")
+
+# Cargar configuración validada con Pydantic
+_CONFIG: ClickUpConfig = get_config()
 
 if not API_TOKEN or not FOLDER_ID:
     print("❌ Faltan variables CLICKUP_API_TOKEN o CLICKUP_FOLDER_ID en el archivo .env")
@@ -98,22 +107,35 @@ except requests.exceptions.RequestException as e:
 def should_fetch_comments(task: dict) -> bool:
     """
     Determina si una tarea debe tener sus comentarios descargados.
-    Criterios:
-    - Tiene tags (especialmente 'bloqueada', 'data', 'duda')
-    - Estado bloqueado
-    - Tiene subtareas (coordinación)
+    Criterios (en orden de prioridad):
+    1. ClickUp API proporciona comment_count > 0 (más eficiente)
+    2. Tiene tags críticas (carga desde data/rag/config/clickup_mappings.json)
+    3. Estado bloqueado explícitamente
+    
+    ✅ Los critical_tags ahora se cargan desde clickup_mappings.json
+    Según documentación v2: https://clickup.com/api/clickupreference/operation/GetTasks/
+    El campo comment_count debería estar disponible si se incluye en params.
     """
+    # Método 1: Usar comment_count si está disponible (más eficiente)
+    comment_count = task.get("comment_count", 0)
+    if comment_count > 0:
+        return True
+    
+    # Método 2: Verificar tags críticas usando Pydantic helper
     tags = task.get("tags", [])
-    if not tags:
-        return False
+    if tags:
+        tag_names = [tag.get("name", "").lower() for tag in tags]
+        
+        # ✅ Usar helper de Pydantic para verificar tags
+        if _CONFIG.should_download_comments(tag_names):
+            return True
     
-    tag_names = [tag.get("name", "").lower() for tag in tags]
+    # Método 3: Verificar si está bloqueada explícitamente
+    # (algunos sistemas marcan bloqueada sin tag)
+    if task.get("status", {}).get("status", "").lower() == "blocked":
+        return True
     
-    # Tags críticas que indican necesidad de comentarios
-    critical_tags = ["bloqueada", "blocked", "bloquer", "data", "datos", 
-                     "duda", "pregunta", "question", "review", "revisión"]
-    
-    return any(critical in tag for tag in tag_names for critical in critical_tags)
+    return False
 
 
 def get_task_comments(task_id: str, task_name: str = "", max_comments: int = 50) -> list:

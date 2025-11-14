@@ -12,20 +12,33 @@ y genera en data/processed/:
 
 import json
 import re
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 from collections import defaultdict
 
+# Agregar utils al path para importar config_models
+ROOT = Path(__file__).resolve().parents[3]  # raíz del repo
+sys.path.insert(0, str(ROOT))
+
+from utils.config_models import get_config, ClickUpConfig
+
 # ============================================================
 # 📂 RUTAS FIJAS (ajústalas si lo necesitas)
 # ============================================================
 
-ROOT = Path(__file__).resolve().parents[3]  # raíz del repo
 INPUT_FILE = ROOT / "data" / "rag" / "ingest" / "clickup_tasks_all_2025-11-13.json"
 OUTPUT_DIR = ROOT / "data" / "processed"
 OUT_JSONL = OUTPUT_DIR / "task_clean.jsonl"
 OUT_JSON = OUTPUT_DIR / "task_clean.json"
+
+# ============================================================
+# ⚙️ CARGA DE CONFIGURACIÓN CON PYDANTIC
+# ============================================================
+
+# Cargar configuración validada con Pydantic
+_CONFIG: ClickUpConfig = get_config()
 
 # ============================================================
 # 🔧 FUNCIONES AUXILIARES
@@ -48,6 +61,9 @@ def normalize_status(raw: str | None, status_type: str | None = None) -> str:
     - custom: Estados personalizados (in progress, review, etc.)
     - closed: Estados finales (complete, done, closed)
     
+    ✅ Ahora carga mapeos desde data/rag/config/clickup_mappings.json
+    Esto permite adaptar a diferentes proyectos sin modificar código.
+    
     Args:
         raw: Nombre del estado de ClickUp
         status_type: Tipo de estado de ClickUp (open/custom/closed)
@@ -60,7 +76,12 @@ def normalize_status(raw: str | None, status_type: str | None = None) -> str:
     
     s = raw.strip().lower()
     
-    # Mapeo directo de estados conocidos de ClickUp
+    # Usar método de Pydantic para normalizar (con fallback automático)
+    normalized = _CONFIG.get_normalized_status(s)
+    if normalized != "unknown":
+        return normalized
+    
+    # Fallback adicional: mapeos hardcodeados para casos edge
     CLICKUP_STATUS_MAP = {
         # Estados estándar de ClickUp
         "to do": "to_do",
@@ -141,6 +162,9 @@ def normalize_priority(p: Dict[str, Any] | None) -> str:
     - normal (3): Prioridad normal
     - low (4): Baja prioridad
     
+    ✅ Ahora carga mapeos desde data/rag/config/clickup_mappings.json
+    Esto permite adaptar a diferentes idiomas/proyectos sin modificar código.
+    
     Args:
         p: Objeto de prioridad de ClickUp con campo 'priority'
     
@@ -152,7 +176,12 @@ def normalize_priority(p: Dict[str, Any] | None) -> str:
     
     priority_name = (p.get("priority") or p.get("name") or "unknown").lower().strip()
     
-    # Mapeo de prioridades de ClickUp
+    # Usar método de Pydantic para normalizar (con fallback automático)
+    normalized = _CONFIG.get_normalized_priority(priority_name)
+    if normalized != "unknown":
+        return normalized
+    
+    # Fallback adicional: mapeos hardcodeados
     PRIORITY_MAP = {
         "urgent": "urgent",
         "urgente": "urgent",
@@ -225,28 +254,9 @@ def get_flags_from_tags(tags: List[Dict[str, Any]] | None) -> Dict[str, bool]:
 # 🌍 MAPEOS A LENGUAJE NATURAL (Para PM/Scrum Master)
 # ============================================================
 
-# Mapeo de estados normalizados a etiquetas naturales en español
-STATUS_TO_SPANISH = {
-    "to_do": "Pendiente",
-    "in_progress": "En progreso",
-    "qa": "En QA/Testing",
-    "review": "En revisión",
-    "done": "Completada",
-    "blocked": "Bloqueada",
-    "cancelled": "Cancelada",
-    "needs_info": "Requiere información",
-    "custom": "Estado personalizado",
-    "unknown": "Estado desconocido",
-}
-
-# Mapeo de prioridades a etiquetas naturales en español
-PRIORITY_TO_SPANISH = {
-    "urgent": "Urgente",
-    "high": "Alta",
-    "normal": "Normal",
-    "low": "Baja",
-    "unknown": "Sin prioridad",
-}
+# Cargar traducciones desde Pydantic config
+STATUS_TO_SPANISH = _CONFIG.spanish_translations.get("status", {})
+PRIORITY_TO_SPANISH = _CONFIG.spanish_translations.get("priority", {})
 
 # Emojis opcionales para enriquecer visualización (opcional)
 STATUS_EMOJI = {

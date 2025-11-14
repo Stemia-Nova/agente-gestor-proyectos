@@ -53,8 +53,10 @@ USER_TEMPLATE = (
     "PRESERVANDO información crítica de Project Management: "
     "1) Si hay sección **Comentarios**, CITA TEXTUALMENTE el contenido del comentario más reciente (razón del bloqueo/duda). "
     "2) Si hay sección **Subtareas**, MENCIONA el número exacto y estados (ej: '2 de 5 completadas'). "
-    "3) Incluye: título, estado, prioridad, sprint, asignado. "
+    "3) OBLIGATORIO: Si hay línea '**Etiquetas:**' o '**Tags:**', DEBES incluir TODAS las etiquetas al FINAL de tu resumen con el formato exacto: 'Etiquetas: tag1, tag2, tag3'. "
+    "4) Incluye: título, estado, prioridad, sprint, asignado. "
     "No uses emojis ni viñetas. Solo texto corrido en español.\n\n"
+    "IMPORTANTE: Las etiquetas son CRÍTICAS para búsquedas. Si hay etiquetas, SIEMPRE termina tu resumen con: 'Etiquetas: [lista]'.\n\n"
     "Markdown:\n{markdown}"
 )
 

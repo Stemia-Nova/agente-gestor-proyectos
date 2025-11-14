@@ -293,7 +293,7 @@ class HybridSearch:
                 "bloqueadas": blocked,
                 "porcentaje_completitud": round((done / total) * 100, 1) if total > 0 else 0,
                 "alta_prioridad": high_priority,
-                "velocidad": done
+                "completadas": done
             }
         except Exception as e:
             logger.error(f"❌ Error obteniendo métricas de {sprint}: {e}")
@@ -312,18 +312,125 @@ class HybridSearch:
                     continue
                 
                 response += f"**{m['sprint']}**:\n"
-                response += f"  • Completitud: {m['porcentaje_completitud']}% ({m['completadas']}/{m['total']} tareas)\n"
+                response += f"  • Completado: {m['porcentaje_completitud']}% ({m['completadas']}/{m['total']} tareas)\n"
                 response += f"  • En progreso: {m['en_progreso']}\n"
                 response += f"  • Pendientes: {m['pendientes']}\n"
                 response += f"  • QA/Review: {m['qa']}/{m['review']}\n"
                 response += f"  • Bloqueadas: {m['bloqueadas']}\n"
                 response += f"  • Alta prioridad: {m['alta_prioridad']}\n"
-                response += f"  • Velocidad: {m['velocidad']} tareas completadas\n\n"
+                response += f"  • Completadas: {m['completadas']}\n\n"
             
             return response.strip()
         except Exception as e:
             logger.error(f"❌ Error comparando sprints: {e}")
             return f"❌ Error al comparar sprints: {e}"
+
+    def generate_report(self, sprint: str, destinatario: str = "Project Manager / Scrum Master") -> str:
+        """
+        Genera un informe profesional del sprint para PMs y Scrum Masters.
+        
+        Args:
+            sprint: Nombre del sprint (ej: "Sprint 2")
+            destinatario: A quién va dirigido el informe
+            
+        Returns:
+            Informe profesional formateado
+        """
+        try:
+            logger.info(f"📄 Generando informe profesional para {sprint}...")
+            
+            # Obtener métricas
+            metrics = self.get_sprint_metrics(sprint)
+            if "error" in metrics:
+                return f"❌ Error al generar informe: {metrics['error']}"
+            
+            # Obtener todas las tareas del sprint
+            sprint_filter = {"sprint": sprint}
+            result = self.collection.get(
+                where=cast(Any, sprint_filter),
+                limit=1000,
+                include=cast(Any, ['metadatas'])
+            )
+            
+            tasks = cast(List[Dict[str, Any]], result.get('metadatas') or [])
+            
+            if not tasks:
+                return f"⚠️ No se encontraron tareas para {sprint}"
+            
+            # Importar generador de informes
+            from utils.report_generator import ReportGenerator
+            
+            generator = ReportGenerator()
+            report = generator.generate_sprint_report(
+                sprint_name=sprint,
+                metrics=metrics,
+                tasks=tasks,
+                destinatario=destinatario
+            )
+            
+            logger.info(f"✅ Informe generado exitosamente para {sprint}")
+            return report
+            
+        except Exception as e:
+            logger.error(f"❌ Error generando informe: {e}", exc_info=True)
+            return f"❌ Error al generar informe: {str(e)}"
+
+    def generate_report_pdf(
+        self, 
+        sprint: str, 
+        output_path: str,
+        destinatario: str = "Project Manager / Scrum Master"
+    ) -> str:
+        """
+        Genera un informe profesional del sprint en formato PDF.
+        
+        Args:
+            sprint: Nombre del sprint (ej: "Sprint 2")
+            output_path: Ruta donde guardar el PDF
+            destinatario: A quién va dirigido el informe
+            
+        Returns:
+            Mensaje de confirmación o error
+        """
+        try:
+            logger.info(f"📄 Generando informe PDF para {sprint}...")
+            
+            # Obtener métricas
+            metrics = self.get_sprint_metrics(sprint)
+            if "error" in metrics:
+                return f"❌ Error al generar informe: {metrics['error']}"
+            
+            # Obtener todas las tareas del sprint
+            sprint_filter = {"sprint": sprint}
+            result = self.collection.get(
+                where=cast(Any, sprint_filter),
+                limit=1000,
+                include=cast(Any, ['metadatas'])
+            )
+            
+            tasks = cast(List[Dict[str, Any]], result.get('metadatas') or [])
+            
+            if not tasks:
+                return f"⚠️ No se encontraron tareas para {sprint}"
+            
+            # Importar generador de informes
+            from utils.report_generator import ReportGenerator
+            
+            generator = ReportGenerator()
+            result_msg = generator.export_to_pdf(
+                sprint_name=sprint,
+                metrics=metrics,
+                tasks=tasks,
+                output_path=output_path,
+                destinatario=destinatario
+            )
+            
+            logger.info(f"✅ Informe PDF generado para {sprint}")
+            return result_msg
+            
+        except Exception as e:
+            logger.error(f"❌ Error generando PDF: {e}", exc_info=True)
+            return f"❌ Error al generar PDF: {str(e)}"
 
     # =============================================================
     # Conteo y agregaciones
@@ -456,8 +563,16 @@ class HybridSearch:
     # Generador con GPT-4o-mini
     # =============================================================
     
-    def answer(self, query: str, top_k: int = 6, temperature: float = 0.4, use_filters: bool = True) -> str:
-        """Genera respuesta contextualizada con manejo robusto de errores."""
+    def answer(self, query: str, top_k: int = 6, temperature: float = 0.4, use_filters: bool = True, conversation_context: str = "") -> str:
+        """Genera respuesta contextualizada con manejo robusto de errores.
+        
+        Args:
+            query: Pregunta del usuario
+            top_k: Número de resultados a recuperar
+            temperature: Temperatura para el LLM
+            use_filters: Si aplicar filtros automáticos
+            conversation_context: Contexto de conversación previa para enriquecer la respuesta
+        """
         try:
             # Validar entrada
             if not query or len(query.strip()) < 3:
@@ -465,6 +580,32 @@ class HybridSearch:
             
             logger.info(f"💬 Generando respuesta para: '{query[:50]}...'")
             query_lower = query.lower()
+            
+            # Detectar solicitud de informe
+            is_report_request = any(word in query_lower for word in [
+                'informe', 'reporte', 'report', 'generar informe', 'genera informe'
+            ])
+            
+            # Detectar si quiere PDF
+            is_pdf_request = 'pdf' in query_lower
+            
+            if is_report_request:
+                sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
+                if sprint_match:
+                    sprint = f"Sprint {sprint_match.group(1)}"
+                    
+                    if is_pdf_request:
+                        # Generar PDF con fecha en el nombre
+                        from datetime import datetime
+                        fecha = datetime.now().strftime("%Y%m%d_%H%M")
+                        pdf_path = f"data/logs/informe_{sprint.replace(' ', '_').lower()}_{fecha}.pdf"
+                        result = self.generate_report_pdf(sprint, pdf_path)
+                        return result
+                    else:
+                        # Generar informe en texto
+                        return self.generate_report(sprint)
+                else:
+                    return "⚠️ Por favor, especifica el sprint para generar el informe (ej: 'genera informe del Sprint 2' o 'genera informe PDF del Sprint 2')"
             
             # Detectar preguntas de conteo
             is_count_question = any(word in query_lower for word in [
@@ -496,13 +637,13 @@ class HybridSearch:
                     if "error" not in metrics:
                         return (
                             f"📊 **Métricas de {metrics['sprint']}**\n\n"
-                            f"• Completitud: {metrics['porcentaje_completitud']}% ({metrics['completadas']}/{metrics['total']} tareas)\n"
-                            f"• En progreso: {metrics['en_progreso']}\n"
-                            f"• Pendientes: {metrics['pendientes']}\n"
-                            f"• QA/Review: {metrics['qa']}/{metrics['review']}\n"
-                            f"• Bloqueadas: {metrics['bloqueadas']}\n"
-                            f"• Alta prioridad: {metrics['alta_prioridad']}\n"
-                            f"• Velocidad: {metrics['velocidad']} tareas completadas"
+                        f"• Completado: {metrics['porcentaje_completitud']}% ({metrics['completadas']}/{metrics['total']} tareas)\n"
+                        f"• En progreso: {metrics['en_progreso']}\n"
+                        f"• Pendientes: {metrics['pendientes']}\n"
+                        f"• QA/Review: {metrics['qa']}/{metrics['review']}\n"
+                        f"• Bloqueadas: {metrics['bloqueadas']}\n"
+                        f"• Alta prioridad: {metrics['alta_prioridad']}\n"
+                        f"• Completadas: {metrics['completadas']}"
                         )
             
             docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
@@ -521,6 +662,10 @@ class HybridSearch:
                 )
             
             context = "\n\n".join(context_parts)
+            
+            # Agregar contexto conversacional si existe
+            if conversation_context:
+                context = f"{conversation_context}\n\n{'='*50}\n\n{context}"
 
             from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
             

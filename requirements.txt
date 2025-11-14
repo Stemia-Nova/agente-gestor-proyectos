@@ -1,71 +1,86 @@
-# ==========================================================
-# Agente Gestor de Proyectos (RAG ClickUp + Chainlit)
-# Versión optimizada (GPU o CPU)
-# ==========================================================
+# ============================================================================
+# 🤖 Agente Gestor de Proyectos - Sistema RAG para ClickUp
+# ============================================================================
+# Sistema de Retrieval-Augmented Generation (RAG) para gestión de proyectos
+# con búsqueda híbrida, naturalización de tareas y generación de informes PDF
+# ============================================================================
 
-# 🔹 Núcleo LLM + interfaz
-chainlit==2.8.4
-python-dotenv==1.2.1
-requests==2.32.3
-urllib3==2.2.2
-certifi==2025.10.5
-charset-normalizer==3.4.0
-idna==3.10
+# -----------------------------------------------------------------------------
+# 🎯 Core - Framework y UI
+# -----------------------------------------------------------------------------
+chainlit==2.8.4                 # Framework conversacional web
+python-dotenv==1.2.1            # Gestión de variables de entorno
+openai==1.54.4                  # Cliente OpenAI para GPT-4
 
-# 🔹 Calidad y desarrollo
-black>=24.0.0
-pylint>=3.2.0
-mypy>=1.11.0
-types-requests
-types-setuptools
+# -----------------------------------------------------------------------------
+# 🌐 HTTP y APIs
+# -----------------------------------------------------------------------------
+requests==2.32.3                # Cliente HTTP
+urllib3==2.2.2                  # Cliente HTTP de bajo nivel
+certifi==2025.10.5              # Certificados SSL
+charset-normalizer==3.4.0       # Detección de codificación
+idna==3.10                      # Soporte de dominios internacionales
 
-# ==========================================================
-# 🔸 Módulo RAG híbrido (ClickUp → Limpieza → Indexación)
-# ==========================================================
+# -----------------------------------------------------------------------------
+# 🧠 RAG y Búsqueda Híbrida
+# -----------------------------------------------------------------------------
+chromadb==0.5.5                 # Base de datos vectorial
+sentence-transformers==3.1.1    # Embeddings semánticos (MiniLM, Jina)
+rank-bm25==0.2.2                # BM25 para búsqueda léxica
+transformers==4.45.2            # Modelos de Hugging Face
+torch==2.5.1                    # PyTorch para modelos neuronales
+accelerate>=0.33.0              # Optimización de carga de modelos
+safetensors>=0.4.3              # Formato seguro para tensors
 
-# 🔹 Utilidades
-pandas==2.2.3
-numpy==1.26.4
-tqdm==4.66.5
-rich==13.9.2
-pyyaml>=6.0.2
+# -----------------------------------------------------------------------------
+# 📊 Procesamiento de Datos
+# -----------------------------------------------------------------------------
+pandas==2.2.3                   # Manipulación de datos
+numpy==1.26.4                   # Operaciones numéricas
+scikit-learn==1.5.2             # Machine learning y métricas
 
-# 🔹 Procesamiento y splitting de texto
-nltk==3.9.1
-langchain-text-splitters==0.3.6
-regex>=2024.5.15
-markdownify==0.13.1       # Conversión HTML→Markdown
+# -----------------------------------------------------------------------------
+# 📝 Procesamiento de Texto
+# -----------------------------------------------------------------------------
+nltk==3.9.1                     # Natural Language Toolkit
+langchain-text-splitters==0.3.6 # Splitting inteligente de documentos
+regex>=2024.5.15                # Expresiones regulares avanzadas
+markdownify==0.13.1             # Conversión HTML → Markdown
 
-# 🔹 Indexación y búsqueda híbrida
-chromadb==0.5.5
-rank-bm25==0.2.2
-sentence-transformers==3.1.1
-scikit-learn==1.5.2
+# -----------------------------------------------------------------------------
+# 📄 Generación de Reportes PDF
+# -----------------------------------------------------------------------------
+reportlab==4.2.5                # Generación de PDFs profesionales
+jinja2==3.1.4                   # Motor de templates
 
-# ==========================================================
-# 🔸 Modelos neuronales (Hugging Face)
-# ==========================================================
-transformers==4.45.2
-accelerate>=0.33.0
-safetensors>=0.4.3
-bitsandbytes==0.43.3      # para 4bit/8bit sin CUDA SDK completo
-torch==2.4.0
-datasets>=3.0.1
+# -----------------------------------------------------------------------------
+# ✅ Validación y Configuración
+# -----------------------------------------------------------------------------
+pydantic==2.12.4                # Validación de datos con types
 
-# ==========================================================
-# 🔸 API OpenAI (opcional, para pruebas)
-# ==========================================================
-openai>=1.0.0,<2.0.0
+# -----------------------------------------------------------------------------
+# 🎨 CLI y UX
+# -----------------------------------------------------------------------------
+tqdm==4.66.5                    # Barras de progreso
+rich==13.9.2                    # Output formateado en terminal
+pyyaml>=6.0.2                   # Parsing de YAML
 
-# ==========================================================
-# 🔸 API/Servidor y tests
-# ==========================================================
-fastapi>=0.116.1,<0.117.0
-uvicorn[standard]>=0.35.0
-aiofiles>=23.2.1
-pytest>=8.3.0
-pytest-asyncio>=0.24.0
+# -----------------------------------------------------------------------------
+# 🧪 Testing y Quality Assurance
+# -----------------------------------------------------------------------------
+pytest>=8.0.0                   # Framework de testing
+pytest-asyncio>=0.23.0          # Testing asíncrono
+black>=24.0.0                   # Formateador de código
+pylint>=3.2.0                   # Linter
+mypy>=1.11.0                    # Type checker
+types-requests                  # Type stubs para requests
+types-setuptools                # Type stubs para setuptools
 
-# ==========================================================
-# End of requirements.txt
-# ==========================================================
+# -----------------------------------------------------------------------------
+# 📦 Información del Proyecto
+# -----------------------------------------------------------------------------
+# Instalación: pip install -r requirements.txt
+# Python: >=3.10
+# Autor: Stemia-Nova
+# Licencia: MIT
+# Repository: https://github.com/Stemia-Nova/agente-gestor-proyectos

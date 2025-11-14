@@ -138,8 +138,15 @@ def main(reset: bool = False) -> None:
         for k, v in (meta or {}).items():
             if v is None:
                 continue
-            if isinstance(v, (list, dict)):
+            
+            # Caso especial: tags como string searchable (no JSON string)
+            # Convertimos ["data", "hotfix"] → "data|hotfix" para búsquedas
+            if k == "tags" and isinstance(v, list):
+                v = "|".join(str(tag) for tag in v) if v else ""
+            # Otros arrays/dicts los guardamos como JSON para preservar estructura
+            elif isinstance(v, (list, dict)):
                 v = json.dumps(v, ensure_ascii=False)
+            
             # Chroma solo acepta str, int, float, bool
             if isinstance(v, (int, float, bool)):
                 clean_meta[k] = v
