@@ -11,22 +11,26 @@
 ### ✅ Fortalezas del Proyecto
 
 1. **✨ Arquitectura Híbrida Profesional**
+
    - Optimización manual para casos frecuentes (<100ms)
    - Delegación LLM para casos complejos (~1-2s)
    - Mejor balance entre velocidad y flexibilidad
 
 2. **🎯 Validación Completa (100%)**
+
    - 21/21 tests pasando
    - Cobertura de todos los casos de uso
    - Performance medida y documentada
 
 3. **📚 Documentación Excepcional**
+
    - 4,500+ líneas en MANUAL_USUARIO.md
    - 500+ líneas en ANALISIS_FINAL.md
    - 250+ líneas en ENFOQUE_HIBRIDO.md
    - README actualizado con badges y ejemplos
 
 4. **🔧 Código Mantenible**
+
    - Modular y bien estructurado
    - Logging exhaustivo
    - Manejo de errores robusto
@@ -49,18 +53,21 @@
 ### 🟡 IMPORTANTES (Mejoras Recomendadas)
 
 1. **Rate Limits de OpenAI**
+
    - **Problema**: 3 RPM, 200 RPD (muy bajo para producción)
    - **Impacto**: Usuario puede agotar límite en 3 minutos
    - **Solución**: Upgrade a plan de pago ($5/mes → 500 RPM)
    - **Prioridad**: ALTA 🔥
 
 2. **Cold Start Latency**
+
    - **Problema**: Primera búsqueda semántica tarda 4.4s (carga de modelo)
    - **Impacto**: Mala UX en primera interacción
    - **Solución**: Pre-cargar modelos al iniciar (eager loading)
    - **Prioridad**: MEDIA
 
 3. **Sin Sistema de Caché**
+
    - **Problema**: Queries repetidas generan costos innecesarios
    - **Impacto**: ~$0.0003/query × 1000 queries = $0.30 (pequeño pero acumulable)
    - **Solución**: Implementar Redis o caché en memoria
@@ -75,18 +82,21 @@
 ### 🟢 MENORES (Nice to Have)
 
 5. **Sin Monitoreo en Tiempo Real**
+
    - **Problema**: No hay dashboard de métricas
    - **Impacto**: Difícil detectar degradación de performance
    - **Solución**: Prometheus + Grafana
    - **Prioridad**: BAJA
 
 6. **Sin Tests de Integración con Chainlit**
+
    - **Problema**: Tests unitarios solamente
    - **Impacto**: No valida flujo end-to-end con UI
    - **Solución**: Crear `test_chatbot_integration.py`
    - **Prioridad**: BAJA
 
 7. **Idioma Único (Español)**
+
    - **Problema**: Soporte parcial para inglés/otros idiomas
    - **Impacto**: Limita audiencia internacional
    - **Solución**: Añadir i18n con gettext
@@ -186,11 +196,13 @@ Componentes principales:
 ### 🔍 Tests Faltantes (Recomendados)
 
 1. **Tests de Rendimiento**:
+
    - [ ] Test de latencia máxima (<5s)
    - [ ] Test de carga (100 queries consecutivas)
    - [ ] Test de memoria (detección de leaks)
 
 2. **Tests de Robustez**:
+
    - [ ] ChromaDB vacía (0 tareas)
    - [ ] ChromaDB con 1000+ tareas
    - [ ] Query extremadamente larga (>500 chars)
@@ -198,6 +210,7 @@ Componentes principales:
    - [ ] Queries SQL injection attempts
 
 3. **Tests de Integración**:
+
    - [ ] End-to-end con Chainlit
    - [ ] Flujo conversacional completo
    - [ ] Generación múltiple de PDFs (sin colisión)
@@ -214,6 +227,7 @@ Componentes principales:
 ### Costos Actuales (OpenAI GPT-4o-mini)
 
 **Por Query Típica:**
+
 ```
 Clasificación intención:  ~100 tokens  × $0.150/1M input  = $0.000015
                           ~20 tokens   × $0.600/1M output = $0.000012
@@ -224,6 +238,7 @@ TOTAL POR QUERY:                                           ~$0.0002
 ```
 
 **Proyecciones:**
+
 - **100 queries/día** → $0.02/día → **$0.60/mes** ✅ Despreciable
 - **1,000 queries/día** → $0.20/día → **$6/mes** ✅ Muy bajo
 - **10,000 queries/día** → $2/día → **$60/mes** ✅ Razonable
@@ -231,6 +246,7 @@ TOTAL POR QUERY:                                           ~$0.0002
 ### 💡 Optimizaciones de Costo
 
 1. **Caché de Respuestas (Redis)**:
+
    - Potencial ahorro: **70-80%** (queries repetidas)
    - Costo Redis: $15/mes (Upstash free tier disponible)
    - ROI: Positivo a partir de 500 queries/día
@@ -260,17 +276,18 @@ Query completa (LLM)         3s       4s        6s       <10s     ✅
 
 ### 🎯 Métricas Clave
 
-| Métrica                    | Valor | Estado |
-| -------------------------- | ----- | ------ |
-| **P50 (mediana)**          | 2.0s  | ✅ BIEN |
-| **P95 (peor 5%)**          | 5.5s  | ⚠️ JUSTO |
-| **P99 (peor 1%)**          | 7.0s  | ⚠️ LÍMITE |
-| **Tasa de éxito**          | 100%  | ✅ EXCELENTE |
-| **Disponibilidad**         | N/A   | ⚠️ SIN MEDICIÓN |
+| Métrica            | Valor | Estado          |
+| ------------------ | ----- | --------------- |
+| **P50 (mediana)**  | 2.0s  | ✅ BIEN         |
+| **P95 (peor 5%)**  | 5.5s  | ⚠️ JUSTO        |
+| **P99 (peor 1%)**  | 7.0s  | ⚠️ LÍMITE       |
+| **Tasa de éxito**  | 100%  | ✅ EXCELENTE    |
+| **Disponibilidad** | N/A   | ⚠️ SIN MEDICIÓN |
 
 ### 🚀 Optimizaciones Recomendadas
 
 1. **Eliminar Cold Start (Prioridad ALTA)**:
+
    ```python
    # En main.py, al iniciar:
    @cl.on_chat_start
@@ -278,13 +295,16 @@ Query completa (LLM)         3s       4s        6s       <10s     ✅
        # Pre-cargar modelos
        await asyncio.to_thread(searcher.preload_models)
    ```
+
    **Impacto**: -3.5s en primera query
 
 2. **Batch Processing (Prioridad MEDIA)**:
+
    ```python
    # Para múltiples queries simultáneas
    responses = await searcher.batch_answer(queries)
    ```
+
    **Impacto**: 30-40% más rápido que secuencial
 
 3. **Streaming de Respuestas (Prioridad BAJA)**:
@@ -302,11 +322,13 @@ Query completa (LLM)         3s       4s        6s       <10s     ✅
 ### ✅ Aspectos Positivos
 
 1. **API Keys Seguras**:
+
    - ✅ Usa .env (no commiteado)
    - ✅ No hay secrets hardcodeados
    - ✅ .gitignore correcto
 
 2. **Inyección de Prompts**:
+
    - ✅ Validación básica de queries
    - ✅ Límite de longitud (implícito en OpenAI)
    - ✅ Sin ejecución de código arbitrario
@@ -318,11 +340,12 @@ Query completa (LLM)         3s       4s        6s       <10s     ✅
 ### ⚠️ Puntos a Reforzar
 
 1. **Rate Limiting Local** (Prioridad MEDIA):
+
    ```python
    # Añadir en handlers.py
    from functools import lru_cache
    from time import time
-   
+
    @lru_cache(maxsize=128)
    def check_rate_limit(user_id: str):
        # Max 10 queries/minuto por usuario
@@ -330,6 +353,7 @@ Query completa (LLM)         3s       4s        6s       <10s     ✅
    ```
 
 2. **Input Sanitization** (Prioridad BAJA):
+
    ```python
    # Validar caracteres sospechosos
    BLOCKED_PATTERNS = ['<script>', 'DROP TABLE', ...]
@@ -361,6 +385,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ### Queries de Prueba Recomendadas
 
 **Básicas (deben responder en <3s):**
+
 ```
 1. ¿Cuántas tareas hay?
 2. ¿Cuántos sprints hay?
@@ -370,6 +395,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ```
 
 **Contextuales (validan conversación):**
+
 ```
 6. ¿Hay tareas con comentarios?
 7. Dame más info  (debe referir a tarea anterior)
@@ -377,6 +403,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ```
 
 **Complejas (pueden tardar 5-7s):**
+
 ```
 9. Quiero un informe del Sprint 3
 10. Dame métricas del Sprint 2
@@ -385,6 +412,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ```
 
 **Edge Cases (robustez):**
+
 ```
 13. ¿Cuántas tareas Sprint 99?  (no existe)
 14. asdf  (query sin sentido)
@@ -398,26 +426,26 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 
 ### vs. Chatbots Genéricos (ChatGPT/Claude)
 
-| Característica        | Este Proyecto | ChatGPT     | Claude      |
-| --------------------- | ------------- | ----------- | ----------- |
-| **Datos ClickUp**     | ✅ Directo     | ❌ No tiene  | ❌ No tiene  |
-| **Latencia**          | 2-4s          | 1-3s        | 1-3s        |
-| **Costo/query**       | $0.0002       | $0.002      | $0.003      |
-| **Precisión PM**      | ✅ Alta        | ⚠️ Media     | ⚠️ Media     |
-| **PDFs automáticos**  | ✅ Sí          | ❌ No        | ❌ No        |
-| **Datos privados**    | ✅ Local       | ❌ OpenAI    | ❌ Anthropic |
+| Característica       | Este Proyecto | ChatGPT     | Claude       |
+| -------------------- | ------------- | ----------- | ------------ |
+| **Datos ClickUp**    | ✅ Directo    | ❌ No tiene | ❌ No tiene  |
+| **Latencia**         | 2-4s          | 1-3s        | 1-3s         |
+| **Costo/query**      | $0.0002       | $0.002      | $0.003       |
+| **Precisión PM**     | ✅ Alta       | ⚠️ Media    | ⚠️ Media     |
+| **PDFs automáticos** | ✅ Sí         | ❌ No       | ❌ No        |
+| **Datos privados**   | ✅ Local      | ❌ OpenAI   | ❌ Anthropic |
 
 **Ventaja competitiva**: Especialización en gestión de proyectos + privacidad ✅
 
 ### vs. ClickUp Bot Nativo
 
-| Característica          | Este Proyecto | ClickUp Bot |
-| ----------------------- | ------------- | ----------- |
-| **NLP avanzado**        | ✅ GPT-4       | ⚠️ Limitado  |
-| **Búsqueda semántica**  | ✅ RAG         | ❌ Keyword   |
-| **Informes PDF**        | ✅ Sí          | ⚠️ Basic     |
-| **Personalización**     | ✅ Total       | ❌ Limitada  |
-| **Costo**               | $6/mes        | $19/mes     |
+| Característica         | Este Proyecto | ClickUp Bot |
+| ---------------------- | ------------- | ----------- |
+| **NLP avanzado**       | ✅ GPT-4      | ⚠️ Limitado |
+| **Búsqueda semántica** | ✅ RAG        | ❌ Keyword  |
+| **Informes PDF**       | ✅ Sí         | ⚠️ Basic    |
+| **Personalización**    | ✅ Total      | ❌ Limitada |
+| **Costo**              | $6/mes        | $19/mes     |
 
 **Ventaja competitiva**: Mejor NLP + más barato ✅
 
@@ -435,11 +463,13 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ### 🔴 ALTA PRIORIDAD (Semana 1 post-demo)
 
 1. **Upgrade OpenAI Plan**:
+
    - De: Tier 1 (3 RPM)
    - A: Tier 2+ ($5/mes, 500 RPM)
    - Razón: Evitar frustración de usuarios
 
 2. **Eliminar Cold Start**:
+
    - Implementar preload_models()
    - Ganar 3.5s en primera interacción
 
@@ -467,6 +497,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 ### 🎉 Estado General: **EXCELENTE**
 
 **Fortalezas**:
+
 - ✅ 100% tests pasando
 - ✅ Arquitectura híbrida profesional
 - ✅ Documentación exhaustiva (5000+ líneas)
@@ -474,6 +505,7 @@ He creado `test_chatbot_queries.py` (ver abajo) que:
 - ✅ Costos mínimos ($6/mes proyectado)
 
 **Debilidades**:
+
 - ⚠️ Rate limits OpenAI (3 RPM) - RESOLVER ANTES DE PRODUCCIÓN
 - ⚠️ Cold start 4.4s - Mejorable pero no crítico
 - ⚠️ Sin tests de integración - Recomendado añadir
