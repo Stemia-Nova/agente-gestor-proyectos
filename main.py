@@ -8,5 +8,13 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    response = await handlers.handle_query(message.content)
-    await cl.Message(content=response).send()
+    response, pdf_path = await handlers.handle_query(message.content)
+    
+    # Si hay PDF, enviarlo como archivo
+    if pdf_path:
+        await cl.Message(
+            content=response,
+            elements=[cl.File(name="informe_sprint.pdf", path=pdf_path, display="inline")]
+        ).send()
+    else:
+        await cl.Message(content=response).send()

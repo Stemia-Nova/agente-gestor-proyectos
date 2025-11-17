@@ -47,136 +47,142 @@ def translate_status(status: str) -> str:
     return STATUS_TO_SPANISH.get(status.lower() if status else "", "Sin estado")
 
 
-SPRINT_REPORT_TEMPLATE = """
-═══════════════════════════════════════════════════════════════════════════
-                        INFORME DE SPRINT - {{ sprint_name }}
-═══════════════════════════════════════════════════════════════════════════
-Fecha: {{ fecha }}
-Preparado para: {{ destinatario }}
+SPRINT_REPORT_TEMPLATE = """# 📊 Informe de Sprint: **{{ sprint_name }}**
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 RESUMEN EJECUTIVO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**Fecha:** {{ fecha }}  
+**Preparado para:** {{ destinatario }}
 
-Total de Tareas: {{ total_tareas }}
-Completadas: {{ completadas }} ({{ porcentaje_completitud }}%)
-En Progreso: {{ en_progreso }}
-Pendientes: {{ pendientes }}
-En QA/Review: {{ qa }}/{{ review }}
-Bloqueadas: {{ bloqueadas }} {% if bloqueadas > 0 %}⚠️ REQUIERE ATENCIÓN{% endif %}
+---
 
-Alta Prioridad: {{ alta_prioridad }}
+## 📈 Resumen Ejecutivo
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 DETALLE DE TAREAS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+| Métrica | Valor |
+|---------|-------|
+| **Total de Tareas** | {{ total_tareas }} |
+| **✅ Completadas** | {{ completadas }} (**{{ porcentaje_completitud }}%**) |
+| **🔄 En Progreso** | {{ en_progreso }} |
+| **⏳ Pendientes** | {{ pendientes }} |
+| **🔍 En QA/Review** | {{ qa }}/{{ review }} |
+| **⚠️ Bloqueadas** | {{ bloqueadas }}{% if bloqueadas > 0 %} 🚨 **REQUIERE ATENCIÓN**{% endif %} |
+| **🔥 Alta Prioridad** | {{ alta_prioridad }} |
+
+---
+
+## 📋 Detalle de Tareas
 
 {% if tareas_completadas %}
-✅ TAREAS COMPLETADAS ({{ tareas_completadas|length }})
+### ✅ Tareas Completadas ({{ tareas_completadas|length }})
+
 {% for tarea in tareas_completadas %}
-  {{ loop.index }}. {{ tarea.name }}
-     Asignado: {{ tarea.assignees }}
-     Prioridad: {{ tarea.priority_spanish }}
-     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
-     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
+{{ loop.index }}. **{{ tarea.name }}**
+   - 👤 Asignado: {{ tarea.assignees }}
+   - 🎯 Prioridad: {{ tarea.priority_spanish }}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}- 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}- 💬 Comentarios: {{ tarea.comments_count }}
+   {% endif %}
 {% endfor %}
 
 {% endif %}
 {% if tareas_en_progreso %}
-🔄 EN PROGRESO ({{ tareas_en_progreso|length }})
+### 🔄 En Progreso ({{ tareas_en_progreso|length }})
+
 {% for tarea in tareas_en_progreso %}
-  {{ loop.index }}. {{ tarea.name }}
-     Asignado: {{ tarea.assignees }}
-     Prioridad: {{ tarea.priority_spanish }}
-     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
-     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
+{{ loop.index }}. **{{ tarea.name }}**
+   - 👤 Asignado: {{ tarea.assignees }}
+   - 🎯 Prioridad: {{ tarea.priority_spanish }}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}- 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}- 💬 Comentarios: {{ tarea.comments_count }}
+   {% endif %}
 {% endfor %}
 
 {% endif %}
 {% if tareas_pendientes %}
-⏳ PENDIENTES ({{ tareas_pendientes|length }})
+### ⏳ Pendientes ({{ tareas_pendientes|length }})
+
 {% for tarea in tareas_pendientes %}
-  {{ loop.index }}. {{ tarea.name }}
-     Asignado: {{ tarea.assignees }}
-     Prioridad: {{ tarea.priority_spanish }}
-     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
-     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
+{{ loop.index }}. **{{ tarea.name }}**
+   - 👤 Asignado: {{ tarea.assignees }}
+   - 🎯 Prioridad: {{ tarea.priority_spanish }}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}- 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}- 💬 Comentarios: {{ tarea.comments_count }}
+   {% endif %}
 {% endfor %}
 
 {% endif %}
 {% if tareas_bloqueadas %}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️  BLOQUEOS CRÍTICOS - REQUIERE ACCIÓN INMEDIATA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---
+
+## 🚨 Bloqueos Críticos - Acción Inmediata Requerida
 
 {% for tarea in tareas_bloqueadas %}
-{{ loop.index }}. {{ tarea.name }}
-   ├─ Estado: {{ tarea.status_spanish }}
-   ├─ Asignado: {{ tarea.assignees }}
-   ├─ Prioridad: {{ tarea.priority_spanish }}
-   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}├─ 📎 Subtareas: {{ tarea.subtasks_count }}
-   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}├─ 💬 Comentarios: {{ tarea.comments_count }}
-   {% endif %}{% if tarea.blocked_reason %}
-   ├─ Motivo: {{ tarea.blocked_reason }}
-   {% else %}
-   ├─ Motivo: NO ESPECIFICADO (requiere investigación)
-   {% endif %}
-   └─ Acción recomendada: {% if tarea.priority == 'urgent' %}ESCALACIÓN INMEDIATA AL CLIENTE{% else %}Reunión con el equipo para desbloquear{% endif %}
+### {{ loop.index }}. {{ tarea.name }}
+
+- **Estado:** {{ tarea.status_spanish }}
+- **Asignado:** {{ tarea.assignees }}
+- **Prioridad:** {{ tarea.priority_spanish }}
+{% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}- **Subtareas:** 📎 {{ tarea.subtasks_count }}
+{% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}- **Comentarios:** 💬 {{ tarea.comments_count }}
+{% endif %}{% if tarea.blocked_reason %}- **Motivo del bloqueo:** {{ tarea.blocked_reason }}
+{% else %}- **Motivo:** ⚠️ NO ESPECIFICADO (requiere investigación)
+{% endif %}- **Acción recomendada:** {% if tarea.priority == 'urgent' %}🔥 ESCALACIÓN INMEDIATA AL CLIENTE{% else %}Reunión con el equipo para desbloquear{% endif %}
 
 {% endfor %}
 
-🔴 ACCIONES REQUERIDAS:
+### 🔴 Acciones Requeridas
+
 {% for tarea in tareas_bloqueadas %}
-   • Desbloquear "{{ tarea.name }}" ({{ tarea.assignees }})
-     {% if not tarea.blocked_reason %}→ Prioridad: Documentar motivo del bloqueo{% endif %}
-     {% if tarea.priority in ['urgent', 'high'] %}→ Requiere reunión con cliente{% endif %}
+- Desbloquear **"{{ tarea.name }}"** ({{ tarea.assignees }})
+  {% if not tarea.blocked_reason %}- → Prioridad: Documentar motivo del bloqueo{% endif %}
+  {% if tarea.priority in ['urgent', 'high'] %}- → Requiere reunión con cliente{% endif %}
 {% endfor %}
 
 {% endif %}
 {% if tareas_alta_prioridad %}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔥 TAREAS DE ALTA PRIORIDAD
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---
+
+## 🔥 Tareas de Alta Prioridad
 
 {% for tarea in tareas_alta_prioridad %}
-{{ loop.index }}. {{ tarea.name }}
-   ├─ Estado: {{ tarea.status_spanish }}
-   ├─ Asignado: {{ tarea.assignees }}
-   ├─ Prioridad: {{ tarea.priority_spanish }}
-   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}├─ 📎 Subtareas: {{ tarea.subtasks_count }}
-   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}└─ 💬 Comentarios: {{ tarea.comments_count }}
-   {% else %}{% endif %}
+{{ loop.index }}. **{{ tarea.name }}**
+   - **Estado:** {{ tarea.status_spanish }}
+   - **Asignado:** {{ tarea.assignees }}
+   - **Prioridad:** {{ tarea.priority_spanish }}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}- 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}- 💬 Comentarios: {{ tarea.comments_count }}
+   {% endif %}
 {% endfor %}
 {% endif %}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 RECOMENDACIONES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---
+
+## 💡 Recomendaciones
 
 {% if bloqueadas > 0 %}
-⚠️  PRIORIDAD ALTA: Resolver {{ bloqueadas }} bloqueo(s) antes de continuar
-   → Programar reunión urgente para desbloqueo
-   → Documentar causas raíz de bloqueos
-{% endif %}
+> **⚠️ PRIORIDAD ALTA:** Resolver **{{ bloqueadas }} bloqueo(s)** antes de continuar
+> - Programar reunión urgente para desbloqueo
+> - Documentar causas raíz de bloqueos
 
+{% endif %}
 {% if porcentaje_completitud < 50 %}
-📌 Sprint con avance bajo ({{ porcentaje_completitud }}%)
-   → Revisar capacidad del equipo
-   → Identificar impedimentos
-   → Considerar replanificación
+> **📌 Sprint con avance bajo ({{ porcentaje_completitud }}%)**
+> - Revisar capacidad del equipo
+> - Identificar impedimentos
+> - Considerar replanificación
+
 {% elif porcentaje_completitud >= 80 %}
-✅ Sprint en buen ritmo ({{ porcentaje_completitud }}%)
-   → Mantener momentum
-   → Preparar siguiente sprint
-{% endif %}
+> **✅ Sprint en buen ritmo ({{ porcentaje_completitud }}%)**
+> - Mantener momentum
+> - Preparar siguiente sprint
 
+{% endif %}
 {% if alta_prioridad > 0 %}
-🎯 Foco: {{ alta_prioridad }} tarea(s) de alta prioridad pendientes
+> **🎯 Foco:** {{ alta_prioridad }} tarea(s) de alta prioridad pendientes
+
 {% endif %}
 
-═══════════════════════════════════════════════════════════════════════════
-                            FIN DEL INFORME
-═══════════════════════════════════════════════════════════════════════════
+---
+
+*Informe generado automáticamente por el Agente Gestor de Proyectos*
 """
 
 
@@ -380,9 +386,36 @@ class ReportGenerator:
                         normal_style
                     ))
                     
+                    # Subtareas y comentarios
+                    if tarea.get('subtasks_count') and int(tarea['subtasks_count']) > 0:
+                        story.append(Paragraph(
+                            f"• Subtareas: {tarea['subtasks_count']}",
+                            normal_style
+                        ))
+                    if tarea.get('comments_count') and int(tarea['comments_count']) > 0:
+                        story.append(Paragraph(
+                            f"• Comentarios: {tarea['comments_count']}",
+                            normal_style
+                        ))
+                    
+                    # Descripción si está disponible
+                    if tarea.get('description'):
+                        desc = tarea['description'][:200] + ('...' if len(tarea['description']) > 200 else '')
+                        story.append(Paragraph(
+                            f"• Descripción: {desc}",
+                            normal_style
+                        ))
+                    
+                    # URL de ClickUp
+                    if tarea.get('url'):
+                        story.append(Paragraph(
+                            f"• Link: <link href='{tarea['url']}'>{tarea['url']}</link>",
+                            normal_style
+                        ))
+                    
                     if tarea.get('blocked_reason'):
                         story.append(Paragraph(
-                            f"• Motivo: {tarea['blocked_reason']}",
+                            f"• Motivo del bloqueo: {tarea['blocked_reason']}",
                             normal_style
                         ))
                     else:
@@ -391,38 +424,105 @@ class ReportGenerator:
                             normal_style
                         ))
                     
+                    # Acción recomendada
+                    if tarea.get('priority') in ['urgent', 'high']:
+                        story.append(Paragraph(
+                            "• Acción: <b>🔥 ESCALACIÓN INMEDIATA AL CLIENTE</b>",
+                            normal_style
+                        ))
+                    else:
+                        story.append(Paragraph(
+                            "• Acción: Reunión con el equipo para desbloquear",
+                            normal_style
+                        ))
+                    
                     story.append(Spacer(1, 0.3*cm))
                 
+                # Acciones requeridas
+                story.append(Paragraph("<b>🔴 ACCIONES REQUERIDAS:</b>", normal_style))
+                for tarea in tareas_bloqueadas:
+                    story.append(Paragraph(
+                        f"→ Desbloquear \"{tarea.get('name', 'Sin nombre')}\" ({tarea.get('assignees', 'Sin asignar')})",
+                        normal_style
+                    ))
+                    if not tarea.get('blocked_reason'):
+                        story.append(Paragraph(
+                            "  → Prioridad: Documentar motivo del bloqueo",
+                            normal_style
+                        ))
+                
+                story.append(Spacer(1, 0.5*cm))
+            
+            # Tareas de Alta Prioridad
+            if tareas_alta_prioridad:
+                story.append(Paragraph(f"🔥 TAREAS DE ALTA PRIORIDAD ({len(tareas_alta_prioridad)})", heading_style))
+                for i, tarea in enumerate(tareas_alta_prioridad, 1):
+                    story.append(Paragraph(
+                        f"<b>{i}. {tarea.get('name', 'Sin nombre')}</b>",
+                        normal_style
+                    ))
+                    story.append(Paragraph(
+                        f"• Estado: {tarea.get('status_spanish', 'N/A')}",
+                        normal_style
+                    ))
+                    story.append(Paragraph(
+                        f"• Asignado: {tarea.get('assignees', 'Sin asignar')}",
+                        normal_style
+                    ))
+                    story.append(Paragraph(
+                        f"• Prioridad: {tarea.get('priority_spanish', 'Sin prioridad')}",
+                        normal_style
+                    ))
+                    if tarea.get('subtasks_count') and int(tarea['subtasks_count']) > 0:
+                        story.append(Paragraph(f"• Subtareas: {tarea['subtasks_count']}", normal_style))
+                    if tarea.get('comments_count') and int(tarea['comments_count']) > 0:
+                        story.append(Paragraph(f"• Comentarios: {tarea['comments_count']}", normal_style))
+                    story.append(Spacer(1, 0.2*cm))
                 story.append(Spacer(1, 0.3*cm))
             
             # Tareas Completadas
             if tareas_completadas:
                 story.append(Paragraph(f"✅ TAREAS COMPLETADAS ({len(tareas_completadas)})", heading_style))
                 for i, tarea in enumerate(tareas_completadas, 1):
-                    story.append(Paragraph(
-                        f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}",
-                        normal_style
-                    ))
+                    details = f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}"
+                    extras = []
+                    if tarea.get('subtasks_count') and int(tarea['subtasks_count']) > 0:
+                        extras.append(f"📎 {tarea['subtasks_count']}")
+                    if tarea.get('comments_count') and int(tarea['comments_count']) > 0:
+                        extras.append(f"💬 {tarea['comments_count']}")
+                    if extras:
+                        details += f" ({', '.join(extras)})"
+                    story.append(Paragraph(details, normal_style))
                 story.append(Spacer(1, 0.3*cm))
             
             # Tareas en Progreso
             if tareas_en_progreso:
                 story.append(Paragraph(f"🔄 EN PROGRESO ({len(tareas_en_progreso)})", heading_style))
                 for i, tarea in enumerate(tareas_en_progreso, 1):
-                    story.append(Paragraph(
-                        f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}",
-                        normal_style
-                    ))
+                    details = f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}"
+                    extras = []
+                    if tarea.get('subtasks_count') and int(tarea['subtasks_count']) > 0:
+                        extras.append(f"📎 {tarea['subtasks_count']}")
+                    if tarea.get('comments_count') and int(tarea['comments_count']) > 0:
+                        extras.append(f"💬 {tarea['comments_count']}")
+                    if extras:
+                        details += f" ({', '.join(extras)})"
+                    story.append(Paragraph(details, normal_style))
                 story.append(Spacer(1, 0.3*cm))
             
             # Tareas Pendientes
             if tareas_pendientes:
                 story.append(Paragraph(f"⏳ PENDIENTES ({len(tareas_pendientes)})", heading_style))
                 for i, tarea in enumerate(tareas_pendientes[:10], 1):  # Limitar a 10 para no saturar
-                    story.append(Paragraph(
-                        f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}",
-                        normal_style
-                    ))
+                    details = f"{i}. {tarea.get('name', 'Sin nombre')} - {tarea.get('assignees', 'Sin asignar')}"
+                    extras = []
+                    if tarea.get('subtasks_count') and int(tarea['subtasks_count']) > 0:
+                        extras.append(f"📎 {tarea['subtasks_count']}")
+                    if tarea.get('comments_count') and int(tarea['comments_count']) > 0:
+                        extras.append(f"💬 {tarea['comments_count']}")
+                    if extras:
+                        details += f" ({', '.join(extras)})"
+                    story.append(Paragraph(details, normal_style))
                 if len(tareas_pendientes) > 10:
                     story.append(Paragraph(f"... y {len(tareas_pendientes) - 10} más", normal_style))
                 story.append(Spacer(1, 0.3*cm))

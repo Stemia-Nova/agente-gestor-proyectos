@@ -19,16 +19,21 @@ except Exception:
     update_chroma_from_clickup = None
 
 
-async def handle_query(query: str) -> str:
-    """Router principal: delega en HybridSearch con memoria contextual."""
+async def handle_query(query: str) -> tuple[str, str | None]:
+    """Router principal: delega en HybridSearch con memoria contextual.
+    
+    Returns:
+        tuple: (respuesta, ruta_pdf_opcional)
+    """
     global conversation_history
     
     q = query.strip()
     if not q:
-        return "Por favor, formula una pregunta sobre tareas, sprints o bloqueos."
+        return ("Por favor, formula una pregunta sobre tareas, sprints o bloqueos.", None)
 
     if any(k in q.lower() for k in ["actualiza clickup", "sincroniza clickup"]):
-        return await _sync_clickup()
+        sync_response = await _sync_clickup()
+        return (sync_response, None)
     
     try:
         # Enriquecer query con contexto si contiene referencias
@@ -48,7 +53,14 @@ async def handle_query(query: str) -> str:
                 )
         
         # Obtener respuesta con contexto conversacional
-        response = cast(Any, hybrid_search).answer(enriched_query, conversation_context=conv_context)
+        result = cast(Any, hybrid_search).answer(enriched_query, conversation_context=conv_context)
+        
+        # El resultado puede ser una tupla (respuesta, pdf_path) o solo respuesta
+        if isinstance(result, tuple):
+            response, pdf_path = result
+        else:
+            response = result
+            pdf_path = None
         
         # Verificar que la respuesta no es None o vacía
         if not response:
@@ -59,11 +71,11 @@ async def handle_query(query: str) -> str:
         if len(conversation_history) > 5:
             conversation_history.pop(0)
         
-        return response
+        return (response, pdf_path)
 
     except Exception as e:
         traceback.print_exc()
-        return f"❌ Error procesando la consulta: {e}"
+        return (f"❌ Error procesando la consulta: {e}", None)
 
 
 def _enrich_query_with_context(query: str) -> str:

@@ -733,45 +733,38 @@ class HybridSearch:
                 'informe', 'reporte', 'report', 'generar informe', 'genera informe', 'dame un informe', 'quiero un informe'
             ])
             
-            # Detectar si quiere explícitamente PDF o texto
+            # Detectar si quiere explícitamente PDF
             is_pdf_request = 'pdf' in query_lower
-            is_text_request = any(word in query_lower for word in ['texto', 'en texto', 'textual', 'pantalla'])
             
             if is_report_request:
                 sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
                 if sprint_match:
                     sprint = f"Sprint {sprint_match.group(1)}"
                     
-                    # Prioridad: 
-                    # 1. Si pide explícitamente texto → generar texto
-                    # 2. Si pide explícitamente PDF → generar PDF
-                    # 3. Por defecto (informe formal) → generar PDF + mensaje amigable
-                    
-                    if is_text_request and not is_pdf_request:
-                        # Usuario quiere ver el informe en pantalla
-                        return self.generate_report(sprint)
-                    else:
-                        # Generar PDF (por defecto o explícito)
+                    if is_pdf_request:
+                        # Usuario pide explícitamente PDF
                         from datetime import datetime
                         fecha = datetime.now().strftime("%Y%m%d_%H%M")
                         pdf_path = f"data/logs/informe_{sprint.replace(' ', '_').lower()}_{fecha}.pdf"
                         result_path = self.generate_report_pdf(sprint, pdf_path)
                         
                         if result_path:
-                            # Mensaje amigable con enlace al PDF
+                            # Retornar tupla (mensaje, ruta_pdf) para que Chainlit envíe el archivo
                             return (
-                                f"📄 **Informe generado exitosamente**\n\n"
-                                f"✅ Sprint: {sprint}\n"
-                                f"📁 Archivo: `{result_path}`\n\n"
-                                f"💡 **Resumen rápido:**\n"
-                                f"• Puedes abrir el PDF para ver el informe completo profesional\n"
-                                f"• Si prefieres verlo aquí, pregunta: 'muestra informe del {sprint} en texto'\n\n"
-                                f"El PDF incluye: métricas, tareas detalladas, bloqueos críticos y recomendaciones."
+                                f"✅ **Informe PDF del {sprint} generado exitosamente**\n\n"
+                                f"📥 El archivo se está descargando automáticamente.\n\n"
+                                f"💡 Si prefieres verlo en texto, pregunta: 'muestra informe del {sprint}'",
+                                result_path
                             )
                         else:
-                            return f"❌ Error al generar PDF para {sprint}"
+                            return (f"❌ Error al generar PDF para {sprint}", None)
+                    else:
+                        # Por defecto: mostrar informe en texto + sugerencia de PDF
+                        text_report = self.generate_report(sprint)
+                        suggestion = f"\n\n---\n\n💡 **¿Quieres descargarlo en PDF?**\nPregunta: *'informe del {sprint} en PDF'*"
+                        return text_report + suggestion
                 else:
-                    return "⚠️ Por favor, especifica el sprint para generar el informe (ej: 'quiero un informe del Sprint 3' o 'genera informe PDF del Sprint 2')"
+                    return "⚠️ Por favor, especifica el sprint para generar el informe (ej: 'quiero un informe del Sprint 3' o 'informe del Sprint 2 en PDF')"
             
             # Clasificar intención usando LLM (más dinámico que reglas hardcodeadas)
             from utils.intent_classifier import get_classifier
