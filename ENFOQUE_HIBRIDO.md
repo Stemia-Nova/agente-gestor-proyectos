@@ -50,14 +50,14 @@
 
 ### Criterios de Decisión
 
-| Tipo de pregunta | Método | Razón |
-|------------------|--------|-------|
-| "¿Cuántas tareas completadas del sprint 3?" | **Manual** | Frecuente, crítico, filtros simples |
-| "¿Jorge tiene tareas pendientes?" | **Manual** | Patrón común, optimizable |
-| "¿Hay tareas bloqueadas?" | **Manual** | Búsqueda directa, determinístico |
-| "¿Cuántos sprints hay?" | **LLM** | Raro, requiere conteo único |
-| "¿Cuántas personas trabajan en el proyecto?" | **LLM** | Agregación compleja |
-| "¿Jorge tiene más tareas que Laura?" | **LLM** | Comparación, razonamiento |
+| Tipo de pregunta                             | Método     | Razón                               |
+| -------------------------------------------- | ---------- | ----------------------------------- |
+| "¿Cuántas tareas completadas del sprint 3?"  | **Manual** | Frecuente, crítico, filtros simples |
+| "¿Jorge tiene tareas pendientes?"            | **Manual** | Patrón común, optimizable           |
+| "¿Hay tareas bloqueadas?"                    | **Manual** | Búsqueda directa, determinístico    |
+| "¿Cuántos sprints hay?"                      | **LLM**    | Raro, requiere conteo único         |
+| "¿Cuántas personas trabajan en el proyecto?" | **LLM**    | Agregación compleja                 |
+| "¿Jorge tiene más tareas que Laura?"         | **LLM**    | Comparación, razonamiento           |
 
 ## 🔧 Implementación
 
@@ -70,14 +70,14 @@ def _handle_count_question(self, query: str) -> Optional[str]:
     - Casos RAROS o COMPLEJOS → Delegar al LLM
     """
     query_lower = query.lower()
-    
+
     # Detectar casos de delegación
     if any(pattern in query_lower for pattern in [
         "cuántos sprints", "número de sprints", ...
     ]):
         logger.info("🔄 Delegando al LLM (caso raro, mejor con contexto)")
         return None  # → Delegar al LLM
-    
+
     # Casos optimizados (tareas)
     # ... lógica manual para filtros de tareas ...
 ```
@@ -87,10 +87,10 @@ def _handle_count_question(self, query: str) -> Optional[str]:
 ```python
 if intent in ["COUNT_TASKS", "CHECK_EXISTENCE"]:
     count_result = self._handle_count_question(query)
-    
+
     if count_result is not None:
         return count_result  # Respuesta manual optimizada
-    
+
     # Si retorna None → preparar contexto enriquecido para LLM
     if is_sprint_count:
         # Construir contexto con info agregada
@@ -102,13 +102,13 @@ if intent in ["COUNT_TASKS", "CHECK_EXISTENCE"]:
                 'completadas': ...,
                 'pendientes': ...
             }
-        
+
         # Enviar al LLM con contexto estructurado
         context = "\n".join([
             f"• {sprint}: {info['count']} tareas ..."
             for sprint, info in sprint_info.items()
         ])
-        
+
         # LLM genera respuesta inteligente
         response = llm.chat.completions.create(...)
 ```
@@ -153,6 +153,7 @@ Porcentaje de éxito: 100.0%
 ### ✅ Beneficios
 
 1. **Flexibilidad**: Entiende reformulaciones naturales
+
    - "¿cuántos sprints hay?"
    - "número de sprints en el proyecto"
    - "cuántas iteraciones tenemos"
@@ -180,13 +181,16 @@ El sistema ahora:
 ## 📝 Archivos Modificados
 
 1. `utils/hybrid_search.py` (líneas 469-540, 785-865)
+
    - Lógica de delegación en `_handle_count_question()`
    - Contexto enriquecido para conteo de sprints en `answer()`
 
 2. `chatbot/prompts.py` (líneas 26-40)
+
    - Instrucciones para conteo de entidades únicas
 
 3. `test_funcionalidades_completas.py` (líneas 195-215)
+
    - Test #21: Conteo de sprints con enfoque híbrido
 
 4. **Nuevos archivos**:

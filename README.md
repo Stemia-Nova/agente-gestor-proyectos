@@ -17,19 +17,19 @@ Sistema de **Retrieval-Augmented Generation (RAG)** especializado en gestión de
 
 ### ✅ **Sistema 100% Funcional y Validado**
 
-| Característica | Estado | Validación |
-|----------------|--------|------------|
-| **Conteo de tareas con filtros combinados** | ✅ Producción | 6/6 tests |
-| **Búsqueda por comentarios (solo activas)** | ✅ Producción | 1/1 test |
-| **Búsqueda por subtareas con progreso** | ✅ Producción | 1/1 test |
-| **Búsqueda por tags** | ✅ Producción | 2/2 tests |
-| **Detección de bloqueos críticos** | ✅ Producción | 1/1 test |
-| **Clasificación de intenciones (LLM)** | ✅ Producción | 20/20 tests |
-| **Contexto conversacional** | ✅ Producción | ✓ Validado |
-| **Informes PDF profesionales** | ✅ Producción | 2/2 tests |
-| **Métricas de sprint** | ✅ Producción | 1/1 test |
-| **Búsqueda semántica híbrida** | ✅ Producción | 2/2 tests |
-| **🆕 Conteo de sprints (híbrido)** | ✅ Producción | 1/1 test |
+| Característica                              | Estado        | Validación  |
+| ------------------------------------------- | ------------- | ----------- |
+| **Conteo de tareas con filtros combinados** | ✅ Producción | 6/6 tests   |
+| **Búsqueda por comentarios (solo activas)** | ✅ Producción | 1/1 test    |
+| **Búsqueda por subtareas con progreso**     | ✅ Producción | 1/1 test    |
+| **Búsqueda por tags**                       | ✅ Producción | 2/2 tests   |
+| **Detección de bloqueos críticos**          | ✅ Producción | 1/1 test    |
+| **Clasificación de intenciones (LLM)**      | ✅ Producción | 20/20 tests |
+| **Contexto conversacional**                 | ✅ Producción | ✓ Validado  |
+| **Informes PDF profesionales**              | ✅ Producción | 2/2 tests   |
+| **Métricas de sprint**                      | ✅ Producción | 1/1 test    |
+| **Búsqueda semántica híbrida**              | ✅ Producción | 2/2 tests   |
+| **🆕 Conteo de sprints (híbrido)**          | ✅ Producción | 1/1 test    |
 
 **Total: 21/21 tests pasando (100% éxito)** | **Tiempo ejecución: ~40s**
 
@@ -56,16 +56,16 @@ chainlit run main.py --port 8000
 
 ```
 👤 Usuario: ¿cuántos sprints hay?
-🤖 Bot: Hay un total de 3 sprints en el proyecto: Sprint 1, Sprint 2 
-       y Sprint 3. Cada sprint tiene 8 tareas distribuidas entre 
+🤖 Bot: Hay un total de 3 sprints en el proyecto: Sprint 1, Sprint 2
+       y Sprint 3. Cada sprint tiene 8 tareas distribuidas entre
        completadas, en progreso y pendientes. 🔄 [Delegación LLM]
 
 👤 Usuario: ¿cuántas tareas completadas tiene Jorge en el sprint 3?
-🤖 Bot: Jorge tiene 1 tarea completada en el Sprint 3: 
+🤖 Bot: Jorge tiene 1 tarea completada en el Sprint 3:
        "Crear tareas para Sprint 2" ✅
 
 👤 Usuario: ¿hay tareas bloqueadas?
-🤖 Bot: Hay 1 tarea bloqueada: "Conseguir que nuestro ChatBot 
+🤖 Bot: Hay 1 tarea bloqueada: "Conseguir que nuestro ChatBot
        conteste a nuestras preguntas" (Sprint 3, 3 subtareas) ⚠️
 
 👤 Usuario: dame más info
@@ -81,38 +81,42 @@ chainlit run main.py --port 8000
 🤖 Bot: 📄 **Informe generado exitosamente**
        ✅ Sprint: Sprint 3
        📁 Archivo: data/logs/informe_sprint_3_20251117_1306.pdf
-       
-       💡 El PDF incluye: métricas, tareas detalladas, bloqueos 
+
+       💡 El PDF incluye: métricas, tareas detalladas, bloqueos
        críticos y recomendaciones profesionales.
 ```
 
 ### 🔧 **Correcciones Críticas Implementadas**
 
 #### **Problema Original**:
+
 ```
 Usuario: ¿cuántas tareas completadas hay en el sprint 3?
 Bot (ANTES): Hay 15 tareas completadas. ❌ (Incorrecto)
 ```
 
 #### **Solución Aplicada** (`utils/hybrid_search.py`):
+
 ```python
 # AHORA: Filtrado en Python, no en ChromaDB
 # 1. Obtener TODAS las tareas del sprint
 # 2. Aplicar filtros en Python (estado, persona, tags)
 # 3. Contar y responder correctamente
 
-Bot (AHORA): Hay 1 tarea completada en el Sprint 3: 
+Bot (AHORA): Hay 1 tarea completada en el Sprint 3:
              "Crear tareas para Sprint 2". ✅ (Correcto)
 ```
 
 #### **Mejoras Adicionales**:
 
 1. **Contexto Conversacional Mejorado** (`chatbot/handlers.py`):
+
    - Detecta "más info", "dame más", "detalles"
    - Mantiene referencia a la última tarea mencionada
    - Proporciona información completa automáticamente
 
 2. **UX de Informes Mejorada** (`utils/hybrid_search.py`):
+
    - **Por defecto**: Genera PDF con mensaje amigable
    - **Opcional**: "en texto" muestra informe en pantalla
    - Incluye resumen rápido con métricas clave
@@ -167,14 +171,14 @@ Tiempo ejecución: ~40 segundos
 
 ### 📈 **Performance**
 
-| Métrica | Valor | Nota |
-|---------|-------|------|
-| **Latencia conteo simple** | <50ms | Optimización manual |
+| Métrica                         | Valor    | Nota                        |
+| ------------------------------- | -------- | --------------------------- |
+| **Latencia conteo simple**      | <50ms    | Optimización manual         |
 | **Latencia búsqueda semántica** | 0.4-4.4s | Cold start ~4s, cache ~0.4s |
-| **Latencia clasificación LLM** | 1.5-2s | GPT-4o-mini |
-| **Latencia generación PDF** | <100ms | ReportLab |
-| **Costo por query** | ~$0.0003 | Despreciable |
-| **Precisión tests** | 100% | 21/21 pasando |
+| **Latencia clasificación LLM**  | 1.5-2s   | GPT-4o-mini                 |
+| **Latencia generación PDF**     | <100ms   | ReportLab                   |
+| **Costo por query**             | ~$0.0003 | Despreciable                |
+| **Precisión tests**             | 100%     | 21/21 pasando               |
 
 ### ⚠️ **Limitaciones Conocidas**
 
@@ -186,18 +190,21 @@ Tiempo ejecución: ~40 segundos
 ### 🔮 **Roadmap Post-Demo**
 
 #### **Corto Plazo (1-2 semanas)**
+
 - [ ] Implementar caché de respuestas (Redis) → -70% costos, -90% latencia
 - [ ] Dashboard de monitoreo (Prometheus)
 - [ ] Fix warnings de parseo de subtareas
 - [ ] Upgrade plan OpenAI (eliminar rate limits)
 
 #### **Medio Plazo (1 mes)**
+
 - [ ] Dashboard visual con métricas (Streamlit/Plotly)
 - [ ] Integración Slack/Teams para notificaciones
 - [ ] Alertas automáticas por email (bloqueos, vencimientos)
 - [ ] Soporte multiidioma completo (EN/ES/FR)
 
 #### **Largo Plazo (3 meses)**
+
 - [ ] Fine-tuning de modelo custom (reducir dependencia OpenAI)
 - [ ] ML para predicciones (riesgo retraso, burnout)
 - [ ] Recomendaciones proactivas (distribución carga)
@@ -207,7 +214,7 @@ Tiempo ejecución: ~40 segundos
 
 ## 📖 Documentación Técnica Detallada
 
-*La siguiente sección contiene la documentación técnica completa del sistema.*
+_La siguiente sección contiene la documentación técnica completa del sistema._
 
 ---
 
@@ -362,6 +369,7 @@ cd agente-gestor-proyectos
 ```
 
 El script automáticamente:
+
 - ✅ Crea el entorno virtual `.venv`
 - ✅ Instala todas las dependencias
 - ✅ Valida las variables de entorno
@@ -401,18 +409,21 @@ cd agente-gestor-proyectos
 ### 🔧 Troubleshooting
 
 **Error: httpx incompatible**
+
 ```bash
 # Solución: httpx>=0.28 tiene breaking changes
 pip install "httpx<0.28"
 ```
 
 **Error: Torch no encontrado**
+
 ```bash
 # CPU only (más ligero)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 **Rate Limit de OpenAI**
+
 - Cuenta gratuita: 3 req/min, 100K tokens/min
 - Solución: Agregar método de pago o esperar entre consultas
 
@@ -638,8 +649,9 @@ python test/test_rag_without_llm.py
 ```
 
 **Resultados esperados**: 14/15 tests (93.3% éxito)
+
 - ✅ Búsqueda semántica + BM25
-- ✅ Reranker con CrossEncoder  
+- ✅ Reranker con CrossEncoder
 - ✅ Filtros por estado, sprint, persona
 - ✅ Métricas de sprint
 - ✅ Detección de bloqueos
@@ -653,6 +665,7 @@ python test/test_edge_cases.py
 ```
 
 Categorías:
+
 1. Consultas de conteo ambiguas
 2. Búsquedas con términos ambiguos
 3. Preguntas multi-condición

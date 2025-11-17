@@ -38,31 +38,37 @@ Un **asistente conversacional inteligente** que ayuda a Project Managers y equip
 ## ⚡ Características principales
 
 ### 🔢 Conteo inteligente de tareas
+
 - **Filtros combinados**: Sprint + Estado + Persona
 - **Ejemplo**: "¿cuántas tareas completadas tiene Jorge en el sprint 3?"
 - **Precisión**: 100% validado con 20+ tests automatizados
 
 ### 🤖 Clasificación de intenciones con LLM
+
 - Sistema dinámico (no hardcodeado) usando GPT-4o-mini
 - Detecta automáticamente: conteos, búsquedas, informes, detalles de tareas
 - Confianza medida (0-100%)
 
 ### 🔍 Búsqueda híbrida (RAG)
+
 - **Embeddings semánticos**: sentence-transformers (all-MiniLM-L12-v2)
 - **Reranking**: cross-encoder para mejorar relevancia
 - **ChromaDB**: Base de datos vectorial persistente
 
 ### 📄 Generación de informes profesionales
+
 - **Formato PDF**: Informe ejecutivo con métricas, bloqueos y recomendaciones
 - **Formato texto**: Vista completa para pantalla
 - **Automático**: Por defecto genera PDF + mensaje amigable
 
 ### 💬 Contexto conversacional
+
 - Recuerda las últimas 5 interacciones
 - Detecta referencias: "esa tarea", "dame más info", "¿tiene comentarios?"
 - Enriquecimiento automático de consultas
 
 ### 🎨 Indicadores visuales PM-friendly
+
 - ⚠️ **BLOQUEADA**: Tareas bloqueadas
 - 🤔 **CON DUDAS**: Requieren clarificación
 - ⏰ **VENCIDA**: Pasadas de fecha
@@ -130,10 +136,12 @@ CHROMA_COLLECTION=clickup_tasks
 ### Obtener credenciales:
 
 1. **ClickUp API Token**:
+
    - Ve a: Settings → Apps → API Token
    - Copia el token `pk_...`
 
 2. **ClickUp Folder ID**:
+
    - Abre tu carpeta en ClickUp
    - Copia el número de la URL: `https://app.clickup.com/.../folder/XXXXXXXXX`
 
@@ -171,54 +179,54 @@ Abre: **http://localhost:8000**
 
 ### 1. **Conteo de tareas**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
-| ¿cuántas tareas hay en total? | 24 tareas |
-| ¿cuántas tareas hay en el sprint 3? | 8 tareas |
-| ¿cuántas tareas completadas hay en el sprint 3? | 1 tarea completada: "Crear tareas..." |
-| ¿cuántas tareas tiene Jorge? | 7 tareas asignadas a Jorge |
-| ¿cuántas tareas tiene Jorge en el sprint 3? | 5 tareas en Sprint 3, asignadas a Jorge |
-| ¿cuántas tareas pendientes hay en el sprint 2? | X tareas pendientes del Sprint 2 |
+| Consulta                                        | Resultado esperado                      |
+| ----------------------------------------------- | --------------------------------------- |
+| ¿cuántas tareas hay en total?                   | 24 tareas                               |
+| ¿cuántas tareas hay en el sprint 3?             | 8 tareas                                |
+| ¿cuántas tareas completadas hay en el sprint 3? | 1 tarea completada: "Crear tareas..."   |
+| ¿cuántas tareas tiene Jorge?                    | 7 tareas asignadas a Jorge              |
+| ¿cuántas tareas tiene Jorge en el sprint 3?     | 5 tareas en Sprint 3, asignadas a Jorge |
+| ¿cuántas tareas pendientes hay en el sprint 2?  | X tareas pendientes del Sprint 2        |
 
 ### 2. **Búsqueda por características**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
-| ¿hay tareas bloqueadas? | 1 tarea bloqueada: "Conseguir ChatBot..." (3 subtareas) |
-| ¿hay tareas con comentarios? | 1 tarea activa con comentarios (excluye completadas) |
-| ¿hay tareas con subtareas? | 3 tareas con subtareas |
-| ¿hay tareas con dudas? | No hay tareas con dudas (o lista si existen) |
-| ¿hay tareas con la etiqueta data? | 4 tareas con tag "data" |
+| Consulta                          | Resultado esperado                                      |
+| --------------------------------- | ------------------------------------------------------- |
+| ¿hay tareas bloqueadas?           | 1 tarea bloqueada: "Conseguir ChatBot..." (3 subtareas) |
+| ¿hay tareas con comentarios?      | 1 tarea activa con comentarios (excluye completadas)    |
+| ¿hay tareas con subtareas?        | 3 tareas con subtareas                                  |
+| ¿hay tareas con dudas?            | No hay tareas con dudas (o lista si existen)            |
+| ¿hay tareas con la etiqueta data? | 4 tareas con tag "data"                                 |
 
 ### 3. **Información detallada**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
-| dame info sobre la tarea "Conseguir ChatBot" | Estado, sprint, prioridad, asignado, subtareas, comentarios |
-| ¿qué subtareas tiene? | Lista de subtareas con estados (Completada, Bloqueada, Pendiente) |
-| ¿tiene comentarios? | Número de comentarios + resumen si disponible |
+| Consulta                                     | Resultado esperado                                                |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| dame info sobre la tarea "Conseguir ChatBot" | Estado, sprint, prioridad, asignado, subtareas, comentarios       |
+| ¿qué subtareas tiene?                        | Lista de subtareas con estados (Completada, Bloqueada, Pendiente) |
+| ¿tiene comentarios?                          | Número de comentarios + resumen si disponible                     |
 
 ### 4. **Generación de informes**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
-| quiero un informe del sprint 3 | Genera PDF + mensaje amigable con ruta |
-| genera informe pdf del sprint 2 | PDF profesional con métricas y recomendaciones |
-| muestra informe del sprint 3 en texto | Informe completo en pantalla (sin PDF) |
+| Consulta                              | Resultado esperado                             |
+| ------------------------------------- | ---------------------------------------------- |
+| quiero un informe del sprint 3        | Genera PDF + mensaje amigable con ruta         |
+| genera informe pdf del sprint 2       | PDF profesional con métricas y recomendaciones |
+| muestra informe del sprint 3 en texto | Informe completo en pantalla (sin PDF)         |
 
 ### 5. **Métricas de sprint**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
+| Consulta                       | Resultado esperado                               |
+| ------------------------------ | ------------------------------------------------ |
 | dame las métricas del sprint 2 | Completitud %, tareas por estado, alta prioridad |
-| compara sprint 1 y sprint 2 | Comparación lado a lado de métricas |
+| compara sprint 1 y sprint 2    | Comparación lado a lado de métricas              |
 
 ### 6. **Búsqueda semántica**
 
-| Consulta | Resultado esperado |
-|----------|-------------------|
+| Consulta                   | Resultado esperado                                    |
+| -------------------------- | ----------------------------------------------------- |
 | ¿qué tareas hay sobre RAG? | Tareas relacionadas con "RAG" (embeddings semánticos) |
-| tareas de embeddings | Busca por similitud semántica |
+| tareas de embeddings       | Busca por similitud semántica                         |
 
 ---
 
@@ -231,8 +239,8 @@ Usuario: ¿hay tareas bloqueadas?
 Bot: Hay 1 tarea bloqueada: "Conseguir que nuestro ChatBot conteste a nuestras preguntas" (3 subtareas).
 
 Usuario: dame más info
-Bot: La tarea "Conseguir que nuestro ChatBot..." está en estado Pendiente, 
-     Sprint 3, prioridad Normal, asignada a Jorge Aguadero. 
+Bot: La tarea "Conseguir que nuestro ChatBot..." está en estado Pendiente,
+     Sprint 3, prioridad Normal, asignada a Jorge Aguadero.
      Tiene 3 subtareas:
      - Subtarea 1 [Completada]
      - Subtarea 2 [Bloqueada] ⚠️
@@ -420,6 +428,7 @@ data/rag/
 ### Error: "OPENAI_API_KEY no está configurada"
 
 **Solución**:
+
 ```bash
 # Verificar que .env existe y tiene la clave
 cat .env | grep OPENAI_API_KEY
@@ -432,6 +441,7 @@ cp .env.example .env
 ### Error: "ChromaDB collection not found"
 
 **Solución**:
+
 ```bash
 # Regenerar la base de datos vectorial
 python data/rag/sync/update_chroma_from_clickup.py
@@ -440,6 +450,7 @@ python data/rag/sync/update_chroma_from_clickup.py
 ### El chatbot cuenta mal las tareas
 
 **Solución**:
+
 ```bash
 # Verificar integridad de datos
 python tools/compare_clickup_vs_chroma.py
@@ -454,12 +465,14 @@ python run_pipeline.py
 ### Error 429: "Rate limit exceeded" (OpenAI)
 
 **Solución**:
+
 - Espera 1 minuto (límite: 3 RPM, 200 RPD)
 - O actualiza a plan de pago para más requests
 
 ### El contexto conversacional no funciona
 
 **Solución**:
+
 ```bash
 # Verificar que handlers.py tiene las mejoras
 grep "more_info_requests" chatbot/handlers.py
@@ -526,6 +539,7 @@ chainlit run main.py --port 8000
 ## 👥 Equipo
 
 **Desarrolladores**:
+
 - Laura Pérez Lopez
 - Jorge Aguadero
 
