@@ -76,9 +76,13 @@ def run_step(name: str, info: dict, step_num: int, total: int) -> bool:
     print(f"{YELLOW}[{step_num}/{total}] {name.upper()}: {desc}{RESET}")
     print(f"    📄 {script.relative_to(ROOT)}")
     
+    # Usar el Python del venv si existe
+    venv_python = ROOT / ".venv" / "bin" / "python"
+    python_exe = str(venv_python) if venv_python.exists() else sys.executable
+    
     try:
         result = subprocess.run(
-            [sys.executable, str(script)],
+            [python_exe, str(script)],
             check=True,
             capture_output=False
         )
