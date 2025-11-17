@@ -25,13 +25,24 @@ sys.path.insert(0, str(ROOT))
 from utils.config_models import get_config, ClickUpConfig
 
 # ============================================================
-# 📂 RUTAS FIJAS (ajústalas si lo necesitas)
+# 📂 RUTAS Y DETECCIÓN AUTOMÁTICA DEL JSON MÁS RECIENTE
 # ============================================================
 
-INPUT_FILE = ROOT / "data" / "rag" / "ingest" / "clickup_tasks_all_2025-11-13.json"
+INGEST_DIR = ROOT / "data" / "rag" / "ingest"
 OUTPUT_DIR = ROOT / "data" / "processed"
 OUT_JSONL = OUTPUT_DIR / "task_clean.jsonl"
 OUT_JSON = OUTPUT_DIR / "task_clean.json"
+
+def get_latest_clickup_json() -> Path:
+    """Encuentra el archivo JSON más reciente de ClickUp en ingest/"""
+    json_files = sorted(INGEST_DIR.glob("clickup_tasks_all_*.json"), reverse=True)
+    if not json_files:
+        raise FileNotFoundError(f"No se encontraron archivos JSON en {INGEST_DIR}")
+    latest = json_files[0]
+    print(f"📁 Usando archivo más reciente: {latest.name}")
+    return latest
+
+INPUT_FILE = get_latest_clickup_json()
 
 # ============================================================
 # ⚙️ CARGA DE CONFIGURACIÓN CON PYDANTIC
@@ -306,8 +317,11 @@ def clean_tasks(raw_tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         status_type = status_obj.get("type")  # open, custom, closed
         
         # Normalizar con contexto de tipo de estado
-        status = normalize_status(status_name, status_type)
-        prio = normalize_priority(t.get("priority"))
+        status_normalized = normalize_status(status_name, status_type)
+        status = STATUS_TO_SPANISH.get(status_normalized, STATUS_TO_SPANISH.get("unknown", status_normalized))
+        
+        prio_normalized = normalize_priority(t.get("priority"))
+        prio = PRIORITY_TO_SPANISH.get(prio_normalized, PRIORITY_TO_SPANISH.get("unknown", prio_normalized))
         sprint = derive_sprint(t)
         parent_id = t.get("parent")
         is_subtask = bool(parent_id)
@@ -317,7 +331,7 @@ def clean_tasks(raw_tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         # Extraer FLAGS adicionales de tags (NO reemplazar el estado de ClickUp)
         # REGLA DE NEGOCIO: Si la tarea está completada, los flags históricos no aplican
-        if status == "done":
+        if status_normalized == "done":
             # Tarea completada: bloqueos/dudas fueron resueltos
             blocked = False
             needs_info = False
@@ -350,18 +364,21 @@ def clean_tasks(raw_tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         project_name = t.get("project_name") or (t.get("project") or {}).get("name") or "unknown"
         folder_name = t.get("folder_name") or (t.get("folder") or {}).get("name")
         
+        task_id = t.get("id")
+        task_name = t.get("name") or "Sin título"
+        
         record = {
-            "task_id": t.get("id"),
-            "name": t.get("name") or "Sin título",
+            "task_id": task_id,
+            "name": task_name,
             
-            # Estados: valor normalizado + etiqueta natural en español
-            "status": status,  # Para lógica y filtros (to_do, in_progress, done, etc.)
-            "status_display": STATUS_TO_SPANISH.get(status, STATUS_TO_SPANISH["unknown"]),  # Para LLM
+            # Estados: directamente en español para coherencia en todo el sistema
+            "status": status,  # En español (Pendiente, En progreso, Completada, etc.)
+            "status_normalized": status_normalized,  # Para lógica interna (to_do, in_progress, done)
             "status_raw": status_name,  # Estado original de ClickUp (para debugging)
             
-            # Prioridades: valor normalizado + etiqueta natural
-            "priority": prio,  # Para lógica (urgent, high, normal, low)
-            "priority_display": PRIORITY_TO_SPANISH.get(prio, PRIORITY_TO_SPANISH["unknown"]),  # Para LLM
+            # Prioridades: directamente en español
+            "priority": prio,  # En español (Urgente, Alta, Normal, Baja)
+            "priority_normalized": prio_normalized,  # Para lógica interna (urgent, high, normal, low)
             
             "assignees": assignees_text,
             "sprint": sprint,
@@ -398,8 +415,8 @@ def assign_sprint_status(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     sprints: dict[str, list[str]] = defaultdict(list)
     for t in tasks:
         sprint_key = str(t.get("sprint") or "Sin sprint")
-        status_val = str(t.get("status") or "unknown")
-        sprints[sprint_key].append(status_val)
+        status_normalized = str(t.get("status_normalized") or "unknown")
+        sprints[sprint_key].append(status_normalized)
     sprint_map = {
         s: "cerrado" if all(st in {"done", "cancelled"} for st in sts) else "actual"
         for s, sts in sprints.items()
@@ -445,11 +462,11 @@ if __name__ == "__main__":
     write_json(cleaned, OUT_JSON)
 
     sprints = sorted({t.get("sprint", 'Sin sprint') for t in cleaned})
-    done = sum(1 for t in cleaned if t["status"] == "done")
-    inprog = sum(1 for t in cleaned if t["status"] == "in_progress")
-    qa = sum(1 for t in cleaned if t["status"] == "qa")
-    review = sum(1 for t in cleaned if t["status"] == "review")
-    todo = sum(1 for t in cleaned if t["status"] == "to_do")
+    done = sum(1 for t in cleaned if t.get("status_normalized") == "done")
+    inprog = sum(1 for t in cleaned if t.get("status_normalized") == "in_progress")
+    qa = sum(1 for t in cleaned if t.get("status_normalized") == "qa")
+    review = sum(1 for t in cleaned if t.get("status_normalized") == "review")
+    todo = sum(1 for t in cleaned if t.get("status_normalized") == "to_do")
     blocked = sum(1 for t in cleaned if t["is_blocked"])
 
     print("\n📊 Resumen:")

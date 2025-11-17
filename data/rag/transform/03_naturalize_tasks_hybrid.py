@@ -146,6 +146,7 @@ def _use_openai() -> bool:
     return bool(OPENAI_API_KEY)
 
 def _summarize_openai(markdown_text: str) -> Tuple[str, Dict[str, Any]]:
+    """Resumen usando OpenAI gpt-4o-mini."""
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
 

@@ -112,7 +112,7 @@ def main(reset: bool = False) -> None:
     print(f"📂 Colección activa: {COLLECTION_NAME}")
 
     ids, docs, metadatas = [], [], []
-    seen_hashes = set()
+    seen_ids = set()
 
     for ch in tqdm(chunks, desc="🧩 Indexando chunks"):
         cid = ch.get("chunk_id")
@@ -122,7 +122,8 @@ def main(reset: bool = False) -> None:
 
         if not cid or not text:
             continue
-        if chash in seen_hashes:
+        # Usar chunk_id para deduplicar, no hash (tareas diferentes pueden tener mismo contenido)
+        if cid in seen_ids:
             continue
 
         # Agregar embeddings híbridos si existe Jina
@@ -161,7 +162,7 @@ def main(reset: bool = False) -> None:
         ids.append(cid)
         docs.append(text)
         metadatas.append(clean_meta)
-        seen_hashes.add(chash)
+        seen_ids.add(cid)
 
     if not ids:
         print("⚠️ No hay chunks válidos para indexar.")
