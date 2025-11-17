@@ -14,13 +14,13 @@ Sistema de **Retrieval-Augmented Generation (RAG)** especializado en gestión de
 - [Características Principales](#-características-principales)
 - [Arquitectura del Sistema](#-arquitectura-del-sistema)
 - [Requisitos](#-requisitos)
-- [Instalación](#-instalación)
+- [Instalación Rápida](#-instalación-rápida)
 - [Configuración](#️-configuración)
 - [Uso](#-uso)
 - [Pipeline RAG](#-pipeline-rag)
 - [Estructura del Proyecto](#-estructura-del-proyecto)
-- [Documentación Adicional](#-documentación-adicional)
 - [Testing](#-testing)
+- [Documentación Adicional](#-documentación-adicional)
 
 ---
 
@@ -149,26 +149,70 @@ Sistema de **Retrieval-Augmented Generation (RAG)** especializado en gestión de
 
 ---
 
-## 🚀 Instalación
+## 🚀 Instalación Rápida
 
-### 1. Clonar el Repositorio
+### Opción 1: Script Automático (Linux/macOS)
 
 ```bash
 git clone https://github.com/Stemia-Nova/agente-gestor-proyectos.git
 cd agente-gestor-proyectos
+./run_dev.sh
 ```
 
-### 2. Configurar Entorno Virtual
+El script automáticamente:
+- ✅ Crea el entorno virtual `.venv`
+- ✅ Instala todas las dependencias
+- ✅ Valida las variables de entorno
+- ✅ Inicia el servidor Chainlit
+
+### Opción 2: Manual
 
 ```bash
-# Crear entorno virtual y instalar dependencias
-make setup
+# 1. Clonar repositorio
+git clone https://github.com/Stemia-Nova/agente-gestor-proyectos.git
+cd agente-gestor-proyectos
 
-# O manualmente:
+# 2. Crear entorno virtual
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # En Windows: .venv\Scripts\activate
+
+# 3. Instalar dependencias
+pip install --upgrade pip
 pip install -r requirements.txt
+
+# 4. Configurar .env (ver sección siguiente)
+cp .env.example .env
+# Editar .env con tus API keys
+
+# 5. Iniciar chatbot
+chainlit run main.py -w
 ```
+
+### Opción 3: Windows (PowerShell)
+
+```powershell
+git clone https://github.com/Stemia-Nova/agente-gestor-proyectos.git
+cd agente-gestor-proyectos
+.\run_dev.ps1
+```
+
+### 🔧 Troubleshooting
+
+**Error: httpx incompatible**
+```bash
+# Solución: httpx>=0.28 tiene breaking changes
+pip install "httpx<0.28"
+```
+
+**Error: Torch no encontrado**
+```bash
+# CPU only (más ligero)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+**Rate Limit de OpenAI**
+- Cuenta gratuita: 3 req/min, 100K tokens/min
+- Solución: Agregar método de pago o esperar entre consultas
 
 ---
 
@@ -215,24 +259,61 @@ Edita `data/rag/config/clickup_mappings.json` para adaptar a tu proyecto:
 
 ---
 
-## 💻 Uso
+## 🔄 Actualizar Base de Datos RAG
 
-### Pipeline Completo (Recomendado)
+### Opción 1: Pipeline Completo Automático
 
 ```bash
-# Ejecutar pipeline RAG completo
-make pipeline
-
-# O paso a paso:
-make ingest       # 📥 Descargar de ClickUp
-make clean-data   # 🧹 Limpiar y normalizar
-make markdown     # 📝 Convertir a markdown
-make naturalize   # 🧠 Naturalizar con GPT-4
-make chunk        # ✂️  Generar chunks
-make index        # 🔍 Indexar en ChromaDB
+# Ejecuta todos los pasos (download → clean → ... → index)
+python run_pipeline.py --all
 ```
 
-### Iniciar Chatbot
+### Opción 2: Sin Descarga (usar datos existentes)
+
+```bash
+# Omite descarga de ClickUp, procesa datos locales
+python run_pipeline.py
+```
+
+### Opción 3: Desde un paso específico
+
+```bash
+# Continuar desde naturalización en adelante
+python run_pipeline.py --from-step naturalize
+```
+
+**Pasos disponibles**: `download`, `clean`, `markdown`, `naturalize`, `merge`, `chunk`, `index`
+
+### Ejecución Manual (paso a paso)
+
+```bash
+# 1. 📥 Descargar de ClickUp (opcional)
+python data/rag/sync/get_clickup_tasks.py
+
+# 2. 🧹 Limpiar y normalizar
+python data/rag/transform/01_clean_clickup_tasks.py
+
+# 3. 📝 Convertir a markdown
+python data/rag/transform/02_markdownfy_tasks.py
+
+# 4. 🧠 Naturalizar con GPT-4
+python data/rag/transform/03_naturalize_tasks_hybrid.py
+
+# 5. 🔗 Combinar metadata
+python data/rag/transform/03b_merge_metadata.py
+
+# 6. ✂️  Generar chunks
+python data/rag/transform/04_chunk_tasks.py
+
+# 7. 🔍 Indexar en ChromaDB
+python data/rag/transform/05_index_tasks.py
+```
+
+---
+
+## 💬 Uso del Chatbot
+
+### Iniciar Servidor
 
 ```bash
 # Modo producción
@@ -286,51 +367,104 @@ Cada etapa del pipeline genera archivos intermedios en `data/processed/`:
 
 ```
 agente-gestor-proyectos/
-├── 📄 README.md                   # Documentación principal
-├── 📄 requirements.txt            # Dependencias Python
-├── 📄 Makefile                    # Comandos automatizados
+├── 📄 README.md                   # Este archivo - Documentación principal
+├── 📄 INSTALL.md                  # Guía de instalación detallada
+├── 📄 requirements.txt            # Dependencias Python (11 principales)
 ├── 📄 main.py                     # Entry point del chatbot
+├── 📄 run_dev.sh                  # Script de inicio automático (Linux/macOS)
+├── 📄 run_dev.ps1                 # Script de inicio automático (Windows)
+├── 📄 run_pipeline.py             # Ejecutor del pipeline RAG completo
 │
 ├── 🗂️ chatbot/                    # Módulo del chatbot Chainlit
-│   ├── config.py                  # Configuración
+│   ├── config.py                  # Configuración del chatbot
 │   ├── handlers.py                # Manejadores de eventos
-│   ├── prompts.py                 # Templates de prompts
-│   └── README.md                  # Documentación del chatbot
+│   └── prompts.py                 # Templates de prompts
 │
 ├── 🗂️ utils/                      # Utilidades compartidas
-│   ├── hybrid_search.py           # Motor de búsqueda RAG
-│   ├── report_generator.py        # Generación de PDFs
-│   ├── config_models.py           # Modelos Pydantic
-│   └── README.md                  # Documentación de utilidades
+│   ├── hybrid_search.py           # Motor RAG (semántica + BM25 + reranker)
+│   ├── report_generator.py        # Generación de informes PDF
+│   ├── config_models.py           # Validación con Pydantic
+│   └── helpers.py                 # Funciones auxiliares
 │
-├── 🗂️ data/                       # Pipeline de datos
-│   ├── README.md                  # Guía educativa del pipeline
+├── 🗂️ test/                       # Suite de pruebas
+│   ├── test_hybrid_search.py      # Tests del motor RAG
+│   ├── test_rag_without_llm.py    # Validación sin LLM
+│   ├── test_edge_cases.py         # Casos límite (30 tests)
+│   └── test_*.py                  # Otros tests funcionales
+│
+├── 🗂️ data/                       # Pipeline de datos y resultados
+│   ├── README.md                  # Guía educativa del pipeline RAG
 │   ├── processed/                 # Archivos intermedios (.jsonl)
-│   ├── logs/                      # PDFs generados
+│   ├── logs/                      # Informes PDF generados
 │   └── rag/
-│       ├── config/                # Configuración de mapeos
-│       ├── ingest/                # Descarga de ClickUp
-│       ├── transform/             # Pipeline de transformación
+│       ├── config/                # Mapeos de ClickUp (JSON)
+│       ├── sync/                  # Scripts de descarga
+│       ├── transform/             # Scripts de transformación (6 pasos)
 │       └── chroma_db/             # Base de datos vectorial
 │
-├── 🗂️ test/                       # Tests automatizados
-│   ├── test_hybrid_search.py
-│   ├── test_natural_queries.py
-│   └── test_chatbot_end2end_mixed.py
+├── 🗂️ tools/                      # Herramientas de análisis
+│   ├── inspect_chroma.py          # Inspección de BD vectorial
+│   ├── query_demo.py              # Demo de consultas
+│   └── compare_clickup_vs_chroma.py
 │
 └── 🗂️ docs/                       # Documentación adicional
-    └── INFORMES_PDF_GUIA.md       # Guía de informes PDF
+    └── archive/                   # Documentos históricos
 ```
+
+---
+
+## 🧪 Testing
+
+### Suite Completa de Tests
+
+```bash
+# Ejecutar todos los tests
+pytest test/ -v
+
+# Tests específicos
+pytest test/test_hybrid_search.py -v        # Motor RAG
+pytest test/test_rag_without_llm.py -v      # Validación sin LLM (15 tests)
+pytest test/test_edge_cases.py -v           # Casos límite (30 tests)
+```
+
+### Tests Sin Dependencia de LLM
+
+Valida el sistema RAG puro (búsqueda híbrida, filtros, métricas):
+
+```bash
+python test/test_rag_without_llm.py
+```
+
+**Resultados esperados**: 14/15 tests (93.3% éxito)
+- ✅ Búsqueda semántica + BM25
+- ✅ Reranker con CrossEncoder  
+- ✅ Filtros por estado, sprint, persona
+- ✅ Métricas de sprint
+- ✅ Detección de bloqueos
+
+### Tests de Casos Límite
+
+Prueba 30 consultas complejas y ambiguas:
+
+```bash
+python test/test_edge_cases.py
+```
+
+Categorías:
+1. Consultas de conteo ambiguas
+2. Búsquedas con términos ambiguos
+3. Preguntas multi-condición
+4. Casos límite de formato
+5. Preguntas sobre informes
+6. Edge cases de lógica
 
 ---
 
 ## 📚 Documentación Adicional
 
-- **[Guía del Pipeline RAG](data/README.md)**: Tutorial paso a paso del flujo de datos
-- **[Configuración de Mapeos](data/rag/config/README.md)**: Cómo adaptar a tu proyecto
-- **[Módulo Chatbot](chatbot/README.md)**: Arquitectura y personalización
-- **[Utilidades RAG](utils/README.md)**: Búsqueda híbrida y generación de reportes
-- **[Informes PDF](docs/INFORMES_PDF_GUIA.md)**: Generación y personalización
+- **[INSTALL.md](INSTALL.md)**: Instalación detallada y troubleshooting
+- **[data/README.md](data/README.md)**: Tutorial completo del pipeline RAG
+- **[docs/INFORMES_PDF_GUIA.md](docs/INFORMES_PDF_GUIA.md)**: Generación de informes PDF
 
 ---
 

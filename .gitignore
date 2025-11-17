@@ -21,6 +21,9 @@ data/rag/ingest/*.jsonl
 __pycache__/
 *.pyc
 
+# Informes generados (PDFs)
+data/logs/*.pdf
+
 # Chainlit uploads/temp files (auto-generated)
 .chainlit/.files/
 

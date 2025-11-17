@@ -77,6 +77,8 @@ Alta Prioridad: {{ alta_prioridad }}
   {{ loop.index }}. {{ tarea.name }}
      Asignado: {{ tarea.assignees }}
      Prioridad: {{ tarea.priority_spanish }}
+     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
+     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
 {% endfor %}
 
 {% endif %}
@@ -86,6 +88,8 @@ Alta Prioridad: {{ alta_prioridad }}
   {{ loop.index }}. {{ tarea.name }}
      Asignado: {{ tarea.assignees }}
      Prioridad: {{ tarea.priority_spanish }}
+     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
+     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
 {% endfor %}
 
 {% endif %}
@@ -95,6 +99,8 @@ Alta Prioridad: {{ alta_prioridad }}
   {{ loop.index }}. {{ tarea.name }}
      Asignado: {{ tarea.assignees }}
      Prioridad: {{ tarea.priority_spanish }}
+     {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}📎 Subtareas: {{ tarea.subtasks_count }}{% endif %}
+     {% if tarea.comments_count and tarea.comments_count|int > 0 %}💬 Comentarios: {{ tarea.comments_count }}{% endif %}
 {% endfor %}
 
 {% endif %}
@@ -108,7 +114,9 @@ Alta Prioridad: {{ alta_prioridad }}
    ├─ Estado: {{ tarea.status_spanish }}
    ├─ Asignado: {{ tarea.assignees }}
    ├─ Prioridad: {{ tarea.priority_spanish }}
-   {% if tarea.blocked_reason %}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}├─ 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}├─ 💬 Comentarios: {{ tarea.comments_count }}
+   {% endif %}{% if tarea.blocked_reason %}
    ├─ Motivo: {{ tarea.blocked_reason }}
    {% else %}
    ├─ Motivo: NO ESPECIFICADO (requiere investigación)
@@ -134,8 +142,10 @@ Alta Prioridad: {{ alta_prioridad }}
 {{ loop.index }}. {{ tarea.name }}
    ├─ Estado: {{ tarea.status_spanish }}
    ├─ Asignado: {{ tarea.assignees }}
-   └─ Prioridad: {{ tarea.priority_spanish }}
-
+   ├─ Prioridad: {{ tarea.priority_spanish }}
+   {% if tarea.subtasks_count and tarea.subtasks_count|int > 0 %}├─ 📎 Subtareas: {{ tarea.subtasks_count }}
+   {% endif %}{% if tarea.comments_count and tarea.comments_count|int > 0 %}└─ 💬 Comentarios: {{ tarea.comments_count }}
+   {% else %}{% endif %}
 {% endfor %}
 {% endif %}
 
@@ -207,12 +217,12 @@ class ReportGenerator:
             else:
                 task['status_spanish'] = "Sin estado"
         
-        # Clasificar tareas por estado
-        tareas_completadas = [t for t in tasks if t.get('status') == 'done']
-        tareas_en_progreso = [t for t in tasks if t.get('status') == 'in_progress']
-        tareas_pendientes = [t for t in tasks if t.get('status') == 'to_do']
+        # Clasificar tareas por estado (soporte español e inglés)
+        tareas_completadas = [t for t in tasks if t.get('status') in ['done', 'Completada']]
+        tareas_en_progreso = [t for t in tasks if t.get('status') in ['in_progress', 'En progreso']]
+        tareas_pendientes = [t for t in tasks if t.get('status') in ['to_do', 'Pendiente']]
         tareas_bloqueadas = [t for t in tasks if t.get('is_blocked')]
-        tareas_alta_prioridad = [t for t in tasks if t.get('priority') in ['urgent', 'high']]
+        tareas_alta_prioridad = [t for t in tasks if t.get('priority') in ['urgent', 'high', 'Urgente', 'Alta']]
         
         # Preparar contexto para la plantilla
         context = {

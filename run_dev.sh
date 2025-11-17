@@ -1,57 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "== run_dev.sh: preparar entorno de desarrollo (WSL / Linux) =="
+echo "🚀 Agente Gestor de Proyectos - Inicio de Desarrollo"
+echo "====================================================="
+echo ""
 
 VENV_DIR=".venv"
 PY_CMD="${PY:-python3}"
 
-# 1) Crear venv si no existe
-if [ ! -d "${VENV_DIR}" ]; then
-  echo "Creando virtualenv ${VENV_DIR}..."
-  ${PY_CMD} -m venv "${VENV_DIR}"
-  echo "Entorno ${VENV_DIR} creado."
-else
-  echo "Entorno ${VENV_DIR} ya existe."
+# Verificar versión de Python
+echo "🔍 Verificando Python..."
+if ! command -v ${PY_CMD} &> /dev/null; then
+    echo "❌ ERROR: Python 3 no encontrado. Instala Python 3.10+ primero."
+    exit 1
 fi
 
-# 2) Activar venv (en esta shell)
-if [ -f "${VENV_DIR}/bin/activate" ]; then
-  # shellcheck source=/dev/null
-  source "${VENV_DIR}/bin/activate"
-  echo "Virtualenv activado."
+PY_VERSION=$(${PY_CMD} --version | cut -d' ' -f2 | cut -d'.' -f1,2)
+echo "   ✓ Python ${PY_VERSION} encontrado"
+
+# Crear venv si no existe
+if [ ! -d "${VENV_DIR}" ]; then
+  echo ""
+  echo "📦 Creando entorno virtual..."
+  ${PY_CMD} -m venv "${VENV_DIR}"
+  echo "   ✓ Entorno ${VENV_DIR} creado"
 else
-  echo "ERROR: no se encontró ${VENV_DIR}/bin/activate"
+  echo "   ✓ Entorno ${VENV_DIR} existente"
+fi
+
+# Activar venv
+echo ""
+echo "🔧 Activando entorno virtual..."
+if [ -f "${VENV_DIR}/bin/activate" ]; then
+  source "${VENV_DIR}/bin/activate"
+  echo "   ✓ Entorno activado"
+else
+  echo "❌ ERROR: No se encontró ${VENV_DIR}/bin/activate"
   exit 1
 fi
 
-# 3) Copiar .env.example a .env si falta
+# Configurar .env
+echo ""
+echo "⚙️  Verificando configuración..."
 if [ ! -f ".env" ]; then
   if [ -f ".env.example" ]; then
     cp .env.example .env
-    echo "Se ha creado .env desde .env.example. Rellena tus claves si es necesario."
+    echo "   ⚠️  Creado .env desde .env.example"
+    echo "   📝 IMPORTANTE: Edita .env con tus API keys antes de usar el sistema"
   else
-    echo "No existe .env.example: crea .env manualmente si hace falta."
+    echo "   ⚠️  No existe .env.example, crea .env manualmente"
   fi
 else
-  echo ".env ya existe."
+  echo "   ✓ Archivo .env configurado"
 fi
 
-# 4) Instalar dependencias
+# Validar API keys
+if [ -f ".env" ]; then
+  source .env
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "   ⚠️  WARNING: OPENAI_API_KEY no configurada en .env"
+  else
+    echo "   ✓ OPENAI_API_KEY encontrada"
+  fi
+fi
+
+# Instalar dependencias
+echo ""
+echo "📚 Instalando dependencias..."
 if [ -f "requirements.txt" ]; then
-  echo "Instalando dependencias..."
-  pip install --upgrade pip
-  pip install -r requirements.txt
+  pip install --upgrade pip -q
+  pip install -r requirements.txt -q
+  echo "   ✓ Dependencias instaladas (11 principales)"
 else
-  echo "No se encontró requirements.txt, saltando instalación de dependencias."
-fi
-
-# 5) Arrancar Chainlit (si está instalado)
-echo "Arrancando Chainlit... (Ctrl+C para detener)"
-if command -v python >/dev/null 2>&1; then
-  # Ejecutar con el python del venv
-  "${VENV_DIR}/bin/python" -m chainlit run main.py --watch
-else
-  echo "ERROR: python no disponible en entorno. Asegúrate de activar el venv o instalar Python." 
+  echo "   ❌ ERROR: requirements.txt no encontrado"
   exit 1
 fi
+
+# Verificar ChromaDB
+echo ""
+echo "🗄️  Verificando base de datos RAG..."
+if [ -d "data/rag/chroma_db" ]; then
+  TASK_COUNT=$(find data/rag/chroma_db -name "*.bin" 2>/dev/null | wc -l)
+  if [ $TASK_COUNT -gt 0 ]; then
+    echo "   ✓ ChromaDB inicializada con datos"
+  else
+    echo "   ⚠️  ChromaDB existe pero vacía"
+    echo "   💡 Ejecuta: python run_pipeline.py --all"
+  fi
+else
+  echo "   ⚠️  ChromaDB no inicializada"
+  echo "   💡 Ejecuta: python run_pipeline.py --all"
+fi
+
+# Arrancar Chainlit
+echo ""
+echo "🌐 Iniciando servidor Chainlit..."
+echo "   📍 URL: http://localhost:8000"
+echo "   ⌨️  Ctrl+C para detener"
+echo ""
+exec "${VENV_DIR}/bin/chainlit" run main.py -w

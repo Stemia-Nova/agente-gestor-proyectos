@@ -79,9 +79,12 @@ class HybridSearch:
                 "cross-encoder/ms-marco-MiniLM-L-12-v2"
             ).to(self.device)
 
-    def _ensure_llm(self) -> OpenAI:
+    def _ensure_llm(self):
+        """Inicializa el cliente OpenAI."""
         if self._llm is None:
+            logger.info("🤖 Inicializando cliente OpenAI...")
             self._llm = OpenAI()
+            logger.info("✅ Cliente OpenAI inicializado correctamente.")
         return self._llm
 
     def _embed_query(self, text: str) -> List[float]:
@@ -222,22 +225,23 @@ class HybridSearch:
         return [docs[i] for i in idxs], [metas[i] for i in idxs]
 
     def _extract_filters_from_query(self, query: str) -> Optional[Dict[str, Any]]:
-        """Extrae filtros de metadata desde la query."""
+        """Extrae filtros de metadata desde la query en español."""
         query_lower = query.lower()
         filters: Dict[str, Any] = {}
         
+        # Filtros de estado (ahora en español)
         if "pendiente" in query_lower or "por hacer" in query_lower:
-            filters["status"] = "to_do"
-        elif "en progreso" in query_lower or "trabajando" in query_lower:
-            filters["status"] = "in_progress"
+            filters["status"] = "Pendiente"
+        elif "en progreso" in query_lower or "trabajando" in query_lower or "progreso" in query_lower:
+            filters["status"] = "En progreso"
         elif "qa" in query_lower or "testing" in query_lower or "prueba" in query_lower:
-            filters["status"] = "qa"
+            filters["status"] = "En QA"
         elif "review" in query_lower or "revisión" in query_lower or "revision" in query_lower:
-            filters["status"] = "review"
-        elif "completada" in query_lower or "finalizada" in query_lower or "hecha" in query_lower:
-            filters["status"] = "done"
+            filters["status"] = "En revisión"
+        elif "completada" in query_lower or "finalizada" in query_lower or "hecha" in query_lower or "terminada" in query_lower:
+            filters["status"] = "Completada"
         elif "cancelada" in query_lower:
-            filters["status"] = "cancelled"
+            filters["status"] = "Cancelada"
         
         if "bloqueada" in query_lower or "bloqueado" in query_lower:
             filters["is_blocked"] = True
@@ -246,12 +250,13 @@ class HybridSearch:
         if sprint_match:
             filters["sprint"] = f"Sprint {sprint_match.group(1)}"
         
+        # Filtros de prioridad (ahora en español)
         if "urgente" in query_lower:
-            filters["priority"] = "urgent"
+            filters["priority"] = "Urgente"
         elif "alta prioridad" in query_lower or "prioridad alta" in query_lower:
-            filters["priority"] = "high"
+            filters["priority"] = "Alta"
         elif "baja prioridad" in query_lower or "prioridad baja" in query_lower:
-            filters["priority"] = "low"
+            filters["priority"] = "Baja"
         
         if len(filters) > 1:
             conditions = [{k: v} for k, v in filters.items()]
@@ -274,9 +279,9 @@ class HybridSearch:
             if total == 0:
                 return {"error": f"No hay tareas en {sprint}"}
             
-            done = sum(1 for m in metadatas if m.get('status') == 'done')
-            in_progress = sum(1 for m in metadatas if m.get('status') == 'in_progress')
-            to_do = sum(1 for m in metadatas if m.get('status') == 'to_do')
+            done = sum(1 for m in metadatas if m.get('status') == 'Completada')
+            in_progress = sum(1 for m in metadatas if m.get('status') == 'En progreso')
+            to_do = sum(1 for m in metadatas if m.get('status') == 'Pendiente')
             qa = sum(1 for m in metadatas if m.get('status') == 'qa')
             review = sum(1 for m in metadatas if m.get('status') == 'review')
             blocked = sum(1 for m in metadatas if m.get('is_blocked', False))
@@ -460,9 +465,41 @@ class HybridSearch:
             logger.error(f"⚠️ Error agregando por {field}: {e}")
             return {}
     
-    def _handle_count_question(self, query: str) -> str:
+    def _handle_count_question(self, query: str) -> Optional[str]:
         """Maneja preguntas de conteo."""
         query_lower = query.lower()
+        
+        # Detectar si la consulta incluye filtros complejos por nombre de persona
+        # que no pueden manejarse con filtros simples de ChromaDB
+        has_person_filter = any(name in query_lower for name in 
+            ["jorge", "laura", "aguadero", "pérez", "lopez", "jor", "lau"]
+        )
+        
+        # Si requiere filtrar por persona, delegar al LLM que maneja mejor el contexto
+        if has_person_filter:
+            return None  # Señal para que answer() use búsqueda semántica + LLM
+        
+        # Detectar negaciones que requieren lógica compleja
+        # "no completadas", "no están completadas", "sin asignar", "excepto X", etc.
+        # Patrón flexible que permite palabras entre "no" y el verbo/adjetivo
+        negation_patterns = [
+            r'\bno\s+(?:\w+\s+)?(completada|finalizad|terminad)',  # "no completadas" o "no están completadas"
+            r'\bsin\s+\w+',
+            r'except',
+            r'\bmenos\b',
+            r'\bfuera\s+de\b'
+        ]
+        has_negation = any(re.search(pattern, query_lower) for pattern in negation_patterns)
+        
+        # Para negaciones simples sobre estados, podemos manejarlo aquí
+        if has_negation and ("completada" in query_lower or "finalizad" in query_lower or "terminad" in query_lower):
+            # "¿Cuántas NO completadas?" = total - completadas
+            total = self.count_tasks()
+            completadas = self.count_tasks(where={"status": "Completada"})
+            no_completadas = total - completadas
+            return f"Hay {no_completadas} tareas no completadas (de un total de {total} tareas)."
+        elif has_negation:
+            return None  # Otras negaciones → delegar al LLM
         
         sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
         sprint_filter = None
@@ -474,12 +511,12 @@ class HybridSearch:
             sprint_filter = {"sprint": "Sprint 3"}
         
         state_filter = None
-        if "curso" in query_lower or "en progreso" in query_lower or "no completadas" in query_lower:
-            state_filter = {"status": {"$ne": "done"}}
+        if "curso" in query_lower or "en progreso" in query_lower:
+            state_filter = {"status": "En progreso"}
         elif "completadas" in query_lower or "finalizadas" in query_lower:
-            state_filter = {"status": "done"}
+            state_filter = {"status": "Completada"}
         elif "pendiente" in query_lower or "por hacer" in query_lower:
-            state_filter = {"status": "to_do"}
+            state_filter = {"status": "Pendiente"}
         elif "bloqueada" in query_lower:
             state_filter = {"is_blocked": True}
         elif " qa" in query_lower or "testing" in query_lower or "prueba" in query_lower:
@@ -487,13 +524,13 @@ class HybridSearch:
         elif "review" in query_lower or "revisión" in query_lower:
             state_filter = {"status": "review"}
         
+        # Combinar filtros simples
+        filters_list = [f for f in [sprint_filter, state_filter] if f]
         combined_filter = None
-        if sprint_filter and state_filter:
-            combined_filter = {"$and": [sprint_filter, state_filter]}
-        elif sprint_filter:
-            combined_filter = sprint_filter
-        elif state_filter:
-            combined_filter = state_filter
+        if len(filters_list) > 1:
+            combined_filter = {"$and": filters_list}
+        elif len(filters_list) == 1:
+            combined_filter = filters_list[0]
         
         count = self.count_tasks(where=combined_filter)
         
@@ -518,9 +555,9 @@ class HybridSearch:
                 state_text = "en curso (no completadas)"
             elif combined_filter and "$ne" in str(combined_filter):
                 state_text = "en curso"
-            elif state_filter.get("status") == "done":
+            elif state_filter.get("status") == "Completada":
                 state_text = "completadas"
-            elif state_filter.get("status") == "to_do":
+            elif state_filter.get("status") == "Pendiente":
                 state_text = "pendientes"
             elif state_filter.get("status") == "qa":
                 state_text = "en QA/testing"
@@ -614,7 +651,77 @@ class HybridSearch:
             ])
             
             if is_count_question:
-                return self._handle_count_question(query)
+                count_result = self._handle_count_question(query)
+                # Si retorna None, significa que requiere LLM para filtros complejos
+                if count_result is not None:
+                    return count_result
+                # Si es None, continúa con búsqueda + LLM normal
+                # IMPORTANTE: Aumentar top_k para consultas con personas
+                # porque necesitamos más contexto para filtrar correctamente
+                # Para consultas con personas en preguntas de conteo:
+                # 1. Extraer el nombre de la persona
+                # 2. Hacer búsqueda híbrida (semántica + BM25 + reranker) enfocada en ese nombre
+                # 3. Aumentar top_k para obtener todas las tareas relevantes de esa persona
+                # 4. Dejar que el LLM filtre según la pregunta original
+                person_detected = None
+                for name in ["jorge", "laura", "aguadero", "pérez", "lopez"]:
+                    if name in query_lower:
+                        person_detected = name.capitalize()
+                        break
+                
+                if person_detected:
+                    # Aumentar top_k para obtener más tareas de esta persona
+                    top_k_person = 20
+                    
+                    # Construir query de búsqueda enfocada en la persona
+                    # Esto mejora la relevancia semántica y BM25
+                    search_query = f"{person_detected} tareas asignadas owner"
+                    
+                    # Usar búsqueda híbrida completa (semántica + BM25 + reranker)
+                    docs, metas = self.search(search_query, top_k=top_k_person, use_filters=use_filters)
+                    
+                    if not docs:
+                        return f"No se encontraron tareas asignadas a {person_detected}."
+                    
+                    # Construir contexto enriquecido con todas las tareas encontradas
+                    context_parts = []
+                    for m in metas:
+                        status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
+                        blocked = "⚠️ BLOQUEADA" if m.get('is_blocked') else ""
+                        assignees = m.get('assignees', 'sin asignar')
+                        priority = m.get('priority', 'sin prioridad')
+                        sprint = m.get('sprint', 'sin sprint')
+                        subtasks = m.get('subtask_count', 0)
+                        comments = m.get('comment_count', 0)
+                        context_parts.append(
+                            f"• {m.get('name', 'sin nombre')} - {status_spanish} {blocked}\n"
+                            f"  Asignado a: {assignees} | Sprint: {sprint} | Prioridad: {priority} | "
+                            f"Subtareas: {subtasks} | Comentarios: {comments}"
+                        )
+                    
+                    context = "\n\n".join(context_parts)
+                    
+                    # Generar respuesta con LLM usando la pregunta ORIGINAL
+                    # (para que responda correctamente a "¿Cuántas completadas tiene Jorge?")
+                    from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
+                    system_prompt = SYSTEM_INSTRUCTIONS
+                    user_prompt = RAG_CONTEXT_PROMPT.format(
+                        system="",
+                        context=context,
+                        question=query  # Query original, no search_query
+                    )
+                    
+                    llm = self._ensure_llm()
+                    completion = llm.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                    )
+                    content = completion.choices[0].message.content
+                    return content.strip() if content else "No se pudo generar respuesta."
             
             # Detectar comparaciones
             is_comparison = any(word in query_lower for word in [
