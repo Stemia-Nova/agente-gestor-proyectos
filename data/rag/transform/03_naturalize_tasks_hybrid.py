@@ -171,13 +171,20 @@ def _summarize_openai(markdown_text: str) -> Tuple[str, Dict[str, Any]]:
                 "model": "gpt-4o-mini",
                 "retries": attempt,
             }
+            # Esperar 20s para evitar rate limit de 3 RPM
+            time.sleep(20)
             return text, usage
         except Exception as e:
             err = str(e)
-            if attempt < MAX_RETRIES - 1:
+            # Si es error 429 (rate limit), esperar más tiempo
+            if "429" in str(e) or "Rate limit" in str(e):
+                wait_time = 25  # Esperar 25s en rate limit
+                time.sleep(wait_time)
+            elif attempt < MAX_RETRIES - 1:
                 time.sleep(2 ** attempt)
-                continue
-            return f"[Error OpenAI] {err}", {"error": err, "model": "gpt-4o-mini", "retries": attempt}
+            else:
+                return f"[Error OpenAI] {err}", {"error": err, "model": "gpt-4o-mini", "retries": attempt}
+            continue
 
     # Fallback por seguridad estática (si no entra al for)
     return "Error desconocido.", {"error": "sin retorno", "model": "gpt-4o-mini"}

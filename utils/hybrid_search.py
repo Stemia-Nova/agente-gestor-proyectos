@@ -15,6 +15,7 @@ Mejoras implementadas:
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Optional, Sequence, cast
 import re
+import json
 import hashlib
 import logging
 from datetime import datetime
@@ -466,24 +467,31 @@ class HybridSearch:
             return {}
     
     def _handle_count_question(self, query: str) -> Optional[str]:
-        """Maneja preguntas de conteo."""
+        """Maneja preguntas de conteo con filtros combinados (sprint + estado + persona).
+        
+        ESTRATEGIA HÍBRIDA PROFESIONAL:
+        - Casos FRECUENTES + CRÍTICOS (tareas con filtros) → Optimización manual (rápido, determinístico)
+        - Casos RAROS o COMPLEJOS (sprints, personas, agregaciones) → Delegar al LLM (flexible, inteligente)
+        
+        Retorna:
+        - str: Respuesta directa si puede manejar el caso
+        - None: Delegar al LLM con contexto enriquecido
+        """
         query_lower = query.lower()
         
-        # Detectar si la consulta incluye filtros complejos por nombre de persona
-        # que no pueden manejarse con filtros simples de ChromaDB
-        has_person_filter = any(name in query_lower for name in 
-            ["jorge", "laura", "aguadero", "pérez", "lopez", "jor", "lau"]
-        )
-        
-        # Si requiere filtrar por persona, delegar al LLM que maneja mejor el contexto
-        if has_person_filter:
-            return None  # Señal para que answer() use búsqueda semántica + LLM
+        # === DELEGAR AL LLM: Preguntas sobre sprints/entidades únicas ===
+        # El LLM tiene acceso a aggregate_by_field() y puede razonar mejor
+        if any(pattern in query_lower for pattern in [
+            "cuántos sprints", "cuantos sprints", "número de sprints",
+            "cantidad de sprints", "cuántas iteraciones", "cuantas iteraciones",
+            "how many sprints", "number of sprints"
+        ]):
+            logger.info("🔄 Delegando conteo de sprints al LLM (caso raro, mejor con contexto)")
+            return None  # → El LLM usará aggregate_by_field("sprint")
         
         # Detectar negaciones que requieren lógica compleja
-        # "no completadas", "no están completadas", "sin asignar", "excepto X", etc.
-        # Patrón flexible que permite palabras entre "no" y el verbo/adjetivo
         negation_patterns = [
-            r'\bno\s+(?:\w+\s+)?(completada|finalizad|terminad)',  # "no completadas" o "no están completadas"
+            r'\bno\s+(?:\w+\s+)?(completada|finalizad|terminad)',
             r'\bsin\s+\w+',
             r'except',
             r'\bmenos\b',
@@ -501,101 +509,202 @@ class HybridSearch:
         elif has_negation:
             return None  # Otras negaciones → delegar al LLM
         
-        sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
+        # === PASO 1: Detectar sprint y obtener tareas ===
+        sprint_match = re.search(r"(?:del|en el|para el|de|en)?\s*sprint\s*(\d+)", query_lower)
         sprint_filter = None
+        sprint_text = None
+        
         if sprint_match:
             sprint_num = sprint_match.group(1)
             sprint_filter = {"sprint": f"Sprint {sprint_num}"}
-        
-        if "actual" in query_lower or "corriente" in query_lower:
+            sprint_text = f"Sprint {sprint_num}"
+        elif "actual" in query_lower or "corriente" in query_lower:
             sprint_filter = {"sprint": "Sprint 3"}
+            sprint_text = "Sprint 3"
         
-        state_filter = None
-        if "curso" in query_lower or "en progreso" in query_lower:
-            state_filter = {"status": "En progreso"}
-        elif "completadas" in query_lower or "finalizadas" in query_lower:
-            state_filter = {"status": "Completada"}
-        elif "pendiente" in query_lower or "por hacer" in query_lower:
-            state_filter = {"status": "Pendiente"}
-        elif "bloqueada" in query_lower:
-            state_filter = {"is_blocked": True}
-        elif " qa" in query_lower or "testing" in query_lower or "prueba" in query_lower:
-            state_filter = {"status": "qa"}
+        # Obtener todas las metadatas del sprint (o todas si no hay sprint)
+        try:
+            result = self.collection.get(
+                where=cast(Any, sprint_filter) if sprint_filter else None,
+                limit=10000,
+                include=cast(Any, ['metadatas'])
+            )
+            all_metas = result.get('metadatas') or []
+        except Exception as e:
+            logger.error(f"Error obteniendo metadatas: {e}")
+            return None
+        
+        if not all_metas:
+            return "No hay tareas que coincidan con los filtros especificados."
+        
+        # === PASO 2: Aplicar TODOS los filtros en Python ===
+        filtered_metas = all_metas
+        filter_descriptions = []  # Para describir los filtros aplicados
+        
+        # Filtro por persona
+        person_detected = None
+        if "jorge" in query_lower:
+            person_detected = "Jorge"
+            filtered_metas = [m for m in filtered_metas if "Jorge" in m.get('assignees', '')]
+            filter_descriptions.append(f"asignadas a {person_detected}")
+        elif "laura" in query_lower:
+            person_detected = "Laura"
+            filtered_metas = [m for m in filtered_metas if "Laura" in m.get('assignees', '')]
+            filter_descriptions.append(f"asignadas a {person_detected}")
+        
+        # Filtro por estado (ORDEN IMPORTA: más específico primero)
+        if "completadas" in query_lower or "finalizadas" in query_lower or "terminad" in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('status') == "Completada"]
+            filter_descriptions.append("completadas")
+        elif "curso" in query_lower or "en progreso" in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('status') == "En progreso"]
+            filter_descriptions.append("en progreso")
+        elif "pendiente" in query_lower or "por hacer" in query_lower or "quedan" in query_lower or "falta" in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('status') == "Pendiente"]
+            filter_descriptions.append("pendientes")
+        elif "bloqueada" in query_lower and "etiqueta" not in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('is_blocked') == True]
+            filter_descriptions.append("bloqueadas")
+        elif " qa" in query_lower or "testing" in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('status') == "qa"]
+            filter_descriptions.append("en QA")
         elif "review" in query_lower or "revisión" in query_lower:
-            state_filter = {"status": "review"}
+            filtered_metas = [m for m in filtered_metas if m.get('status') == "review"]
+            filter_descriptions.append("en revisión")
         
-        # Combinar filtros simples
-        filters_list = [f for f in [sprint_filter, state_filter] if f]
-        combined_filter = None
-        if len(filters_list) > 1:
-            combined_filter = {"$and": filters_list}
-        elif len(filters_list) == 1:
-            combined_filter = filters_list[0]
+        # Filtros especiales (dudas, comentarios, subtareas)
+        if "duda" in query_lower:
+            filtered_metas = [m for m in filtered_metas if m.get('has_doubts') == True]
+            # Si es pregunta genérica sobre existencia de dudas, responder directamente
+            if any(word in query_lower for word in ["hay ", "existe", "tiene alguna", "alguna tarea"]):
+                count = len(filtered_metas)
+                if count > 0:
+                    task_details = []
+                    for m in filtered_metas[:5]:
+                        name = m.get('name', 'Sin nombre')
+                        has_comments = m.get('has_comments', False)
+                        comments_count = m.get('comments_count', 0)
+                        if has_comments:
+                            task_details.append(f'"{name}" ({comments_count} comentarios)')
+                        else:
+                            task_details.append(f'"{name}" (sin comentarios)')
+                    
+                    if count == 1:
+                        return f"Sí, hay {count} tarea con dudas: {task_details[0]}."
+                    else:
+                        tasks_list = ", ".join(task_details)
+                        return f"Sí, hay {count} tareas con dudas: {tasks_list}."
+                else:
+                    return "No hay tareas con dudas."
         
-        count = self.count_tasks(where=combined_filter)
+        if "comentario" in query_lower:
+            # Buscar tareas con comentarios (SOLO ACTIVAS, no completadas)
+            filtered_metas = [m for m in filtered_metas if m.get('has_comments') == True and m.get('status') != "Completada"]
+            # Si es pregunta genérica sobre existencia de comentarios, responder directamente
+            if any(word in query_lower for word in ["hay ", "existe", "tiene alguna", "alguna tarea"]):
+                count = len(filtered_metas)
+                if count > 0:
+                    # Construir respuesta con info de estado
+                    task_details = []
+                    for m in filtered_metas[:5]:
+                        name = m.get('name', 'Sin nombre')
+                        status = m.get('status', 'sin estado')
+                        task_details.append(f'"{name}" ({status})')
+                    
+                    if count == 1:
+                        return f"Sí, hay {count} tarea activa con comentarios: {task_details[0]}."
+                    else:
+                        tasks_list = ", ".join(task_details)
+                        return f"Sí, hay {count} tareas activas con comentarios: {tasks_list}."
+                else:
+                    return "No hay tareas activas con comentarios (se excluyen las completadas)."
         
+        if "subtarea" in query_lower:
+            # Buscar tareas con subtareas
+            filtered_metas = [m for m in filtered_metas if m.get('has_subtasks') == True]
+            # Si es pregunta genérica sobre existencia de subtareas, responder directamente
+            if any(word in query_lower for word in ["hay ", "existe", "tiene alguna", "alguna tarea"]):
+                count = len(filtered_metas)
+                if count > 0:
+                    task_names = [m.get('name', 'Sin nombre') for m in filtered_metas[:5]]
+                    if count == 1:
+                        return f"Sí, hay {count} tarea con subtareas: \"{task_names[0]}\"."
+                    else:
+                        tasks_list = ", ".join([f"\"{name}\"" for name in task_names])
+                        return f"Sí, hay {count} tareas con subtareas: {tasks_list}."
+                else:
+                    return "No hay tareas con subtareas."
+        
+        # Filtro por etiquetas/tags (tags es string "data|hotfix")
+        if "etiqueta" in query_lower or "tag" in query_lower:
+            for tag_name in ["data", "hotfix", "bloqueada", "blocked"]:
+                if tag_name in query_lower:
+                    filtered_metas = [m for m in filtered_metas if tag_name in m.get('tags', '').lower()]
+                    filter_descriptions.append(f'con etiqueta "{tag_name}"')
+                    break
+        
+        # === PASO 3: Contar y construir respuesta ===
+        count = len(filtered_metas)
+        
+        # Obtener nombres de tareas (máximo 5) con info adicional para bloqueadas
         task_names = []
-        if count > 0 and count <= 5:
-            try:
-                result = self.collection.get(where=cast(Any, combined_filter), limit=5)
-                metadatas = result.get('metadatas') or []
-                task_names = [m.get('name', 'Sin nombre') for m in metadatas]
-            except Exception:
-                pass
-        
-        if sprint_match:
-            sprint_text = f"Sprint {sprint_match.group(1)}"
-        elif "actual" in query_lower:
-            sprint_text = "el sprint actual (Sprint 3)"
-        else:
-            sprint_text = "total"
-        
-        if state_filter:
-            if "curso" in query_lower:
-                state_text = "en curso (no completadas)"
-            elif combined_filter and "$ne" in str(combined_filter):
-                state_text = "en curso"
-            elif state_filter.get("status") == "Completada":
-                state_text = "completadas"
-            elif state_filter.get("status") == "Pendiente":
-                state_text = "pendientes"
-            elif state_filter.get("status") == "qa":
-                state_text = "en QA/testing"
-            elif state_filter.get("status") == "review":
-                state_text = "en revisión"
-            elif state_filter.get("is_blocked"):
-                state_text = "bloqueadas"
+        for m in filtered_metas[:5]:
+            name = m.get('name', 'Sin nombre')
+            if m.get('is_blocked'):
+                details = []
+                if m.get('has_comments'):
+                    details.append(f"{m.get('comments_count', 0)} comentarios")
+                if m.get('has_subtasks'):
+                    details.append(f"{m.get('subtasks_count', 0)} subtareas")
+                if m.get('has_doubts'):
+                    details.append("con dudas")
+                
+                if details:
+                    task_names.append(f'"{name}" ({", ".join(details)})')
+                else:
+                    task_names.append(f'"{name}"')
             else:
-                state_text = ""
-        else:
-            state_text = ""
+                task_names.append(name)
         
+        # Construir descripción del contexto
+        context_parts = []
+        if sprint_text:
+            context_parts.append(f"en el {sprint_text}")
+        if filter_descriptions:
+            context_parts.append(" ".join(filter_descriptions))
+        
+        context_str = ", ".join(context_parts) if context_parts else "en total"
+        
+        # Construir respuesta
         plural = count != 1
-        if sprint_text != "total" and state_text:
-            if plural:
-                base_response = f"En {sprint_text} hay {count} tareas {state_text}"
-            else:
-                state_singular = state_text.rstrip('s') if state_text.endswith('as') or state_text.endswith('es') else state_text
-                base_response = f"En {sprint_text} hay {count} tarea {state_singular}"
-        elif sprint_text != "total":
-            base_response = f"En {sprint_text} hay {count} tarea{'s' if plural else ''}"
-        elif state_text:
-            if plural:
-                base_response = f"Hay {count} tareas {state_text}"
-            else:
-                state_singular = state_text.rstrip('s') if state_text.endswith('as') or state_text.endswith('es') else state_text
-                base_response = f"Hay {count} tarea {state_singular}"
-        else:
-            base_response = f"Hay un total de {count} tarea{'s' if plural else ''} en el proyecto"
         
-        if task_names:
-            if count == 1:
-                return f"{base_response}: \"{task_names[0]}\"."
+        if context_str == "en total":
+            base_response = f"Hay {count} tarea{'s' if plural else ''} en total"
+        else:
+            if plural:
+                base_response = f"Hay {count} tareas {context_str}"
             else:
-                tasks_list = ", ".join([f"\"{name}\"" for name in task_names[:-1]]) + f" y \"{task_names[-1]}\""
+                # Ajustar palabras al singular
+                context_str_singular = (context_str
+                                       .replace("completadas", "completada")
+                                       .replace("pendientes", "pendiente")
+                                       .replace("bloqueadas", "bloqueada")
+                                       .replace("asignadas", "asignada"))
+                base_response = f"Hay {count} tarea {context_str_singular}"
+        
+        # Agregar nombres de tareas si hay pocas
+        if task_names and count <= 5:
+            if count == 1:
+                return f"{base_response}: {task_names[0]}."
+            elif count == 2:
+                return f"{base_response}: {task_names[0]} y {task_names[1]}."
+            else:
+                tasks_list = ", ".join(task_names[:-1]) + f" y {task_names[-1]}"
                 return f"{base_response}: {tasks_list}."
         else:
             return f"{base_response}."
+
+
 
     # =============================================================
     # Generador con GPT-4o-mini
@@ -621,48 +730,145 @@ class HybridSearch:
             
             # Detectar solicitud de informe
             is_report_request = any(word in query_lower for word in [
-                'informe', 'reporte', 'report', 'generar informe', 'genera informe'
+                'informe', 'reporte', 'report', 'generar informe', 'genera informe', 'dame un informe', 'quiero un informe'
             ])
             
-            # Detectar si quiere PDF
+            # Detectar si quiere explícitamente PDF o texto
             is_pdf_request = 'pdf' in query_lower
+            is_text_request = any(word in query_lower for word in ['texto', 'en texto', 'textual', 'pantalla'])
             
             if is_report_request:
                 sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
                 if sprint_match:
                     sprint = f"Sprint {sprint_match.group(1)}"
                     
-                    if is_pdf_request:
-                        # Generar PDF con fecha en el nombre
+                    # Prioridad: 
+                    # 1. Si pide explícitamente texto → generar texto
+                    # 2. Si pide explícitamente PDF → generar PDF
+                    # 3. Por defecto (informe formal) → generar PDF + mensaje amigable
+                    
+                    if is_text_request and not is_pdf_request:
+                        # Usuario quiere ver el informe en pantalla
+                        return self.generate_report(sprint)
+                    else:
+                        # Generar PDF (por defecto o explícito)
                         from datetime import datetime
                         fecha = datetime.now().strftime("%Y%m%d_%H%M")
                         pdf_path = f"data/logs/informe_{sprint.replace(' ', '_').lower()}_{fecha}.pdf"
-                        result = self.generate_report_pdf(sprint, pdf_path)
-                        return result if result else f"❌ Error al generar PDF para {sprint}"
-                    else:
-                        # Generar informe en texto
-                        return self.generate_report(sprint)
+                        result_path = self.generate_report_pdf(sprint, pdf_path)
+                        
+                        if result_path:
+                            # Mensaje amigable con enlace al PDF
+                            return (
+                                f"📄 **Informe generado exitosamente**\n\n"
+                                f"✅ Sprint: {sprint}\n"
+                                f"📁 Archivo: `{result_path}`\n\n"
+                                f"💡 **Resumen rápido:**\n"
+                                f"• Puedes abrir el PDF para ver el informe completo profesional\n"
+                                f"• Si prefieres verlo aquí, pregunta: 'muestra informe del {sprint} en texto'\n\n"
+                                f"El PDF incluye: métricas, tareas detalladas, bloqueos críticos y recomendaciones."
+                            )
+                        else:
+                            return f"❌ Error al generar PDF para {sprint}"
                 else:
-                    return "⚠️ Por favor, especifica el sprint para generar el informe (ej: 'genera informe del Sprint 2' o 'genera informe PDF del Sprint 2')"
+                    return "⚠️ Por favor, especifica el sprint para generar el informe (ej: 'quiero un informe del Sprint 3' o 'genera informe PDF del Sprint 2')"
             
-            # Detectar preguntas de conteo
-            is_count_question = any(word in query_lower for word in [
-                'cuántas', 'cuantas', 'cantidad', 'número', 'total', 'count'
-            ])
+            # Clasificar intención usando LLM (más dinámico que reglas hardcodeadas)
+            from utils.intent_classifier import get_classifier
             
-            if is_count_question:
+            classifier = get_classifier()
+            intent_result = classifier.classify(query)
+            intent = intent_result.get("intent", "GENERAL_QUERY")
+            confidence = intent_result.get("confidence", 0.0)
+            
+            logger.info(f"🎯 Intención detectada: {intent} (confianza: {confidence:.2f})")
+            
+            # Si la intención es COUNT_TASKS o CHECK_EXISTENCE, usar el handler optimizado
+            if intent in ["COUNT_TASKS", "CHECK_EXISTENCE"]:
                 count_result = self._handle_count_question(query)
-                # Si retorna None, significa que requiere LLM para filtros complejos
+                # Si retorna None, significa que requiere LLM para filtros complejos o conteos de entidades
                 if count_result is not None:
                     return count_result
-                # Si es None, continúa con búsqueda + LLM normal
+                
+                # === CASO DELEGADO: Conteo de entidades únicas (sprints, personas, estados) ===
+                # Detectar si es pregunta sobre sprints/entidades (no tareas)
+                is_sprint_count = any(pattern in query_lower for pattern in [
+                    "cuántos sprints", "cuantos sprints", "número de sprints",
+                    "cantidad de sprints", "how many sprints"
+                ])
+                
+                if is_sprint_count:
+                    logger.info("🧠 Delegando conteo de sprints al LLM con contexto completo")
+                    try:
+                        # Obtener TODAS las metadatas
+                        result = self.collection.get(
+                            include=cast(Any, ["metadatas"]),
+                            limit=10000
+                        )
+                        all_metas = result.get('metadatas', [])
+                        
+                        if not all_metas:
+                            return "No hay tareas en la base de datos."
+                        
+                        # Construir contexto con información de sprints
+                        sprint_info = {}
+                        for m in all_metas:
+                            sprint = m.get('sprint', 'Sin Sprint')
+                            if sprint not in sprint_info:
+                                sprint_info[sprint] = {
+                                    'count': 0,
+                                    'completadas': 0,
+                                    'pendientes': 0,
+                                    'en_progreso': 0
+                                }
+                            sprint_info[sprint]['count'] += 1
+                            status = m.get('status', '')
+                            if status == 'Completada':
+                                sprint_info[sprint]['completadas'] += 1
+                            elif status == 'Pendiente':
+                                sprint_info[sprint]['pendientes'] += 1
+                            elif status == 'En progreso':
+                                sprint_info[sprint]['en_progreso'] += 1
+                        
+                        # Construir contexto enriquecido para el LLM
+                        context_parts = []
+                        for sprint, info in sorted(sprint_info.items()):
+                            context_parts.append(
+                                f"• {sprint}: {info['count']} tareas "
+                                f"({info['completadas']} completadas, {info['en_progreso']} en progreso, "
+                                f"{info['pendientes']} pendientes)"
+                            )
+                        
+                        context = "\n".join(context_parts)
+                        
+                        # Generar respuesta con LLM
+                        from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
+                        system_prompt = SYSTEM_INSTRUCTIONS
+                        user_prompt = RAG_CONTEXT_PROMPT.format(
+                            system="",
+                            context=f"Información de sprints en el proyecto:\n\n{context}",
+                            question=query
+                        )
+                        
+                        llm = self._ensure_llm()
+                        completion = llm.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=0.2,  # Temperatura baja para respuestas determinísticas en conteos
+                        )
+                        content = completion.choices[0].message.content
+                        return content.strip() if content else "No se pudo generar respuesta."
+                    
+                    except Exception as e:
+                        logger.error(f"Error manejando conteo de sprints con LLM: {e}")
+                        return f"⚠️ Error al procesar la consulta: {str(e)}"
+                
+                # Si es None pero NO es conteo de sprints, continúa con búsqueda normal
                 # IMPORTANTE: Aumentar top_k para consultas con personas
                 # porque necesitamos más contexto para filtrar correctamente
-                # Para consultas con personas en preguntas de conteo:
-                # 1. Extraer el nombre de la persona
-                # 2. Hacer búsqueda híbrida (semántica + BM25 + reranker) enfocada en ese nombre
-                # 3. Aumentar top_k para obtener todas las tareas relevantes de esa persona
-                # 4. Dejar que el LLM filtre según la pregunta original
                 person_detected = None
                 for name in ["jorge", "laura", "aguadero", "pérez", "lopez"]:
                     if name in query_lower:
@@ -670,58 +876,63 @@ class HybridSearch:
                         break
                 
                 if person_detected:
-                    # Aumentar top_k para obtener más tareas de esta persona
-                    top_k_person = 20
-                    
-                    # Construir query de búsqueda enfocada en la persona
-                    # Esto mejora la relevancia semántica y BM25
-                    search_query = f"{person_detected} tareas asignadas owner"
-                    
-                    # Usar búsqueda híbrida completa (semántica + BM25 + reranker)
-                    docs, metas = self.search(search_query, top_k=top_k_person, use_filters=use_filters)
-                    
-                    if not docs:
-                        return f"No se encontraron tareas asignadas a {person_detected}."
-                    
-                    # Construir contexto enriquecido con todas las tareas encontradas
-                    context_parts = []
-                    for m in metas:
-                        status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
-                        blocked = "⚠️ BLOQUEADA" if m.get('is_blocked') else ""
-                        assignees = m.get('assignees', 'sin asignar')
-                        priority = m.get('priority', 'sin prioridad')
-                        sprint = m.get('sprint', 'sin sprint')
-                        subtasks = m.get('subtask_count', 0)
-                        comments = m.get('comment_count', 0)
-                        context_parts.append(
-                            f"• {m.get('name', 'sin nombre')} - {status_spanish} {blocked}\n"
-                            f"  Asignado a: {assignees} | Sprint: {sprint} | Prioridad: {priority} | "
-                            f"Subtareas: {subtasks} | Comentarios: {comments}"
+                    # Buscar TODAS las tareas de esta persona
+                    # ChromaDB no soporta $contains, así que obtenemos todas y filtramos
+                    try:
+                        result = self.collection.get(
+                            include=cast(Any, ["metadatas"])
                         )
-                    
-                    context = "\n\n".join(context_parts)
-                    
-                    # Generar respuesta con LLM usando la pregunta ORIGINAL
-                    # (para que responda correctamente a "¿Cuántas completadas tiene Jorge?")
-                    from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
-                    system_prompt = SYSTEM_INSTRUCTIONS
-                    user_prompt = RAG_CONTEXT_PROMPT.format(
-                        system="",
-                        context=context,
-                        question=query  # Query original, no search_query
-                    )
-                    
-                    llm = self._ensure_llm()
-                    completion = llm.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        temperature=temperature,
-                    )
-                    content = completion.choices[0].message.content
-                    return content.strip() if content else "No se pudo generar respuesta."
+                        all_metas = result.get('metadatas', [])
+                        
+                        # Filtrar por persona en Python
+                        metas = [m for m in all_metas if person_detected in m.get('assignees', '')]
+                        
+                        if not metas:
+                            return f"No se encontraron tareas asignadas a {person_detected}."
+                        
+                        # Construir contexto enriquecido con todas las tareas encontradas
+                        context_parts = []
+                        for m in metas:
+                            status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
+                            blocked = "⚠️ BLOQUEADA" if m.get('is_blocked') else ""
+                            assignees = m.get('assignees', 'sin asignar')
+                            priority = m.get('priority', 'sin prioridad')
+                            sprint = m.get('sprint', 'sin sprint')
+                            subtasks = m.get('subtasks_count', 0)
+                            comments = m.get('comments_count', 0)
+                            context_parts.append(
+                                f"• {m.get('name', 'sin nombre')} - {status_spanish} {blocked}\n"
+                                f"  Asignado a: {assignees} | Sprint: {sprint} | Prioridad: {priority} | "
+                                f"Subtareas: {subtasks} | Comentarios: {comments}"
+                            )
+                        
+                        context = "\n\n".join(context_parts)
+                        
+                        # Generar respuesta con LLM usando la pregunta ORIGINAL
+                        # (para que responda correctamente a "¿Cuántas completadas tiene Jorge?")
+                        from chatbot.prompts import SYSTEM_INSTRUCTIONS, RAG_CONTEXT_PROMPT
+                        system_prompt = SYSTEM_INSTRUCTIONS
+                        user_prompt = RAG_CONTEXT_PROMPT.format(
+                            system="",
+                            context=context,
+                            question=query  # Query original, no search_query
+                        )
+                        
+                        llm = self._ensure_llm()
+                        completion = llm.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=temperature,
+                        )
+                        content = completion.choices[0].message.content
+                        return content.strip() if content else "No se pudo generar respuesta."
+                    except Exception as e:
+                        logger.error(f"Error buscando tareas de {person_detected}: {e}")
+                        # Fallback a None para que use búsqueda normal
+                        return None
             
             # Detectar comparaciones
             is_comparison = any(word in query_lower for word in [
@@ -736,8 +947,11 @@ class HybridSearch:
                 elif "sprint 1" in query_lower and "sprint 2" in query_lower:
                     return self.compare_sprints(["Sprint 1", "Sprint 2", "Sprint 3"])
             
-            # Detectar solicitud de métricas
-            if "progreso" in query_lower or "métrica" in query_lower or "resumen" in query_lower:
+            # Detectar solicitud de métricas (pero NO si pregunta por subtareas)
+            is_metrics_request = ("progreso" in query_lower or "métrica" in query_lower or "resumen" in query_lower)
+            is_subtask_question = ("subtarea" in query_lower or "sub-tarea" in query_lower)
+            
+            if is_metrics_request and not is_subtask_question:
                 sprint_match = re.search(r"sprint\s*(\d+)", query_lower)
                 if sprint_match:
                     sprint = f"Sprint {sprint_match.group(1)}"
@@ -754,7 +968,32 @@ class HybridSearch:
                         f"• Completadas: {metrics['completadas']}"
                         )
             
-            docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
+            # Detectar si hay un nombre de tarea específico entre comillas
+            task_name_match = re.search(r'"([^"]+)"', query)
+            
+            if task_name_match:
+                # Buscar específicamente esa tarea por nombre
+                task_name = task_name_match.group(1)
+                logger.info(f"🔍 Búsqueda específica de tarea: {task_name}")
+                
+                # Obtener todas las tareas y buscar por coincidencia de nombre
+                result = self.collection.get(include=cast(Any, ["metadatas"]))
+                all_metas = result.get('metadatas', [])
+                
+                # Buscar coincidencia exacta o parcial
+                matching_metas = [m for m in all_metas if task_name.lower() in m.get('name', '').lower()]
+                
+                if matching_metas:
+                    metas = matching_metas[:top_k]
+                    docs = [m.get('name', '') for m in metas]
+                    logger.info(f"✅ Encontradas {len(metas)} tareas que coinciden")
+                else:
+                    # Si no hay coincidencia, usar búsqueda semántica normal
+                    docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
+            else:
+                # Búsqueda semántica normal
+                docs, metas = self.search(query, top_k=top_k, use_filters=use_filters)
+            
             if not docs:
                 from chatbot.prompts import RAG_NO_RESULTS
                 return RAG_NO_RESULTS
@@ -762,12 +1001,77 @@ class HybridSearch:
             context_parts = []
             for m in metas[:top_k]:
                 status_spanish = m.get('status_spanish', m.get('status', 'sin estado'))
-                blocked = "⚠️ BLOQUEADA" if m.get('is_blocked') else ""
-                context_parts.append(
-                    f"• {m.get('name', 'sin nombre')} - {status_spanish} {blocked}\n"
-                    f"  Sprint: {m.get('sprint', 'N/A')} | Prioridad: {m.get('priority', 'sin prioridad')}\n"
+                
+                # Indicadores críticos para PM
+                indicators = []
+                if m.get('is_blocked'):
+                    indicators.append("⚠️ BLOQUEADA")
+                if m.get('has_doubts'):
+                    indicators.append("🤔 CON DUDAS")
+                if m.get('is_overdue'):
+                    indicators.append("⏰ VENCIDA")
+                if m.get('is_pending_review'):
+                    indicators.append("👀 PENDIENTE REVISIÓN")
+                
+                indicators_str = " ".join(indicators)
+                
+                # Información básica
+                task_info = [
+                    f"• {m.get('name', 'sin nombre')} - {status_spanish} {indicators_str}",
+                    f"  Sprint: {m.get('sprint', 'N/A')} | Prioridad: {m.get('priority', 'sin prioridad')}",
                     f"  Asignado: {m.get('assignees', 'sin asignar')}"
-                )
+                ]
+                
+                # Agregar subtareas si existen (contenido completo con estado)
+                if m.get('has_subtasks'):
+                    subtasks_count = m.get('subtasks_count', 0)
+                    subtasks_raw = m.get('subtasks', '[]')
+                    
+                    # Parsear y analizar subtareas
+                    try:
+                        subtasks = json.loads(subtasks_raw) if isinstance(subtasks_raw, str) else subtasks_raw
+                        if subtasks:
+                            # Contar estados de subtareas
+                            completed = sum(1 for st in subtasks if isinstance(st, dict) and st.get('status', {}).get('status', '').lower() == 'completada')
+                            blocked = sum(1 for st in subtasks if isinstance(st, dict) and st.get('status', {}).get('status', '').lower() == 'blocked')
+                            
+                            status_info = f"{completed}/{subtasks_count} completadas"
+                            if blocked > 0:
+                                status_info += f", {blocked} bloqueadas ⚠️"
+                            
+                            task_info.append(f"  📋 {subtasks_count} subtarea(s): {status_info}")
+                            task_info.append(f"  Subtareas:")
+                            for st in subtasks[:5]:  # Máximo 5 subtareas
+                                if isinstance(st, dict):
+                                    st_name = st.get('name', 'Sin nombre')
+                                    st_status = st.get('status', {})
+                                    st_status_str = st_status.get('status', 'Pendiente') if isinstance(st_status, dict) else 'Pendiente'
+                                    task_info.append(f"    • {st_name} [{st_status_str}]")
+                                else:
+                                    task_info.append(f"    • {str(st)}")
+                    except Exception as e:
+                        logger.warning(f"Error parseando subtareas: {e}")
+                        task_info.append(f"  📋 {subtasks_count} subtarea(s)")
+                
+                # Agregar tags si existen
+                tags = m.get('tags', '')
+                if tags:
+                    task_info.append(f"  🏷️ Tags: {tags}")
+                
+                # CRÍTICO: Siempre mostrar comentarios si existen (pueden contener info importante)
+                if m.get('has_comments'):
+                    comments_count = m.get('comments_count', 0)
+                    task_info.append(f"  💬 {comments_count} comentario(s)")
+                
+                # CRÍTICO: Siempre mostrar si tiene dudas
+                if m.get('has_doubts'):
+                    has_comments = m.get('has_comments', False)
+                    if has_comments:
+                        task_info.append(f"  ❓ Tiene dudas (revisar comentarios para posible resolución)")
+                    else:
+                        task_info.append(f"  ❓ Tiene dudas SIN comentarios (requiere atención)")
+                
+                context_parts.append("\n".join(task_info))
             
             context = "\n\n".join(context_parts)
             
